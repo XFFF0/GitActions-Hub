@@ -1,597 +1,703 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct FilesView: View {
     @StateObject private var fileManager = LocalFileManager()
-    @EnvironmentObject var gitHubService: GitHubService
+    @StateObject private var githubService = GitHubService()
     
-    @State private var showFileEditor = false
-    @State private var showCreateDialog = false
-    @State private var showCommitSheet = false
-    @State private var showImportPicker = false
-    @State private var showDeleteAlert = false
-    @State private var showRenameDialog = false
-    @State private var fileToDelete: GitFile?
-    @State private var fileToRename: GitFile?
-    @State private var newFileName = ""
-    @State private var isCreatingFolder = false
-    @State private var isEditMode = false
+    // Repository Info
+    @State private var selectedRepo: Repo?
+    @State private var owner: String = ""
+    @State private var repoName: String = ""
+    @State private var branch: String = "main"
+    
+    // UI State
+    @State private var commitMessage: String = ""
+    @State private var showingCommitSheet = false
+    @State private var showingNewFileSheet = false
+    @State private var newFileName: String = ""
+    @State private var newFileContent: String = ""
+    @State private var isNewDirectory: Bool = false
+    @State private var showingRenameSheet = false
+    @State private var renameTarget: GitFile?
+    @State private var renameText: String = ""
+    @State private var showingRepoSelector = false
+    @State private var showingFilePicker = false
+    @State private var showingEditor = false
+    @State private var editingFile: GitFile?
+    @State private var editingContent: String = ""
+    @State private var showingDeleteConfirm = false
+    @State private var deleteTarget: GitFile?
     
     var body: some View {
         NavigationStack {
             ZStack {
-                AnimatedGradientBackground()
-                VStack(spacing: 0) {
-                    filesHeader
-                    pathBar
-                    fileToolbar.padding(.horizontal).padding(.bottom, 8)
-                    
-                    if fileManager.isLoading {
-                        LoadingCard()
-                    } else if fileManager.rootFiles.isEmpty {
-                        EmptyStateView(icon: "folder.badge.plus", title: "مجلد فارغ", subtitle: "أضف ملفات أو استورد من Files app")
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        ScrollView {
-                            LazyVStack(spacing: 2) {
-                                ForEach(Array(fileManager.rootFiles.enumerated()), id: \.element.id) { index, file in
-                                    FileRow(
-                                        file: file,
-                                        depth: 0,
-                                        isEditMode: isEditMode,
-                                        canMoveUp: index > 0,
-                                        canMoveDown: index < fileManager.rootFiles.count - 1,
-                                        onTap: { handleFileTap($0) },
-                                        onDelete: { fileToDelete = $0; showDeleteAlert = true },
-                                        onRename: { fileToRename = $0; newFileName = $0.name; showRenameDialog = true },
-                                        onMoveUp: { fileManager.moveFile(file, direction: .up) },
-                                        onMoveDown: { fileManager.moveFile(file, direction: .down) }
-                                    )
-                                }
-                            }
-                            .padding(.horizontal, 8).padding(.vertical, 8)
-                        }
-                    }
-                }
-            }
-            .navigationBarHidden(true)
-        }
-        // Fix: Force LTR on entire view to prevent Arabic UI from flipping English content
-        .environment(\.layoutDirection, .rightToLeft)
-        .sheet(isPresented: $showFileEditor) {
-            if let file = fileManager.selectedFile {
-                FileEditorView(file: file, content: fileManager.fileContent) { newContent in
-                    fileManager.writeFile(file, content: newContent)
-                }
-            }
-        }
-        .sheet(isPresented: $showCommitSheet) {
-            CommitPushSheet(gitHubService: gitHubService, fileManager: fileManager)
-        }
-        .fileImporter(isPresented: $showImportPicker, allowedContentTypes: [.item, .folder], allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { urls.forEach { fileManager.importFromFiles(url: $0) } }
-        }
-        .alert("إنشاء \(isCreatingFolder ? "مجلد" : "ملف")", isPresented: $showCreateDialog) {
-            TextField("الاسم", text: $newFileName).autocorrectionDisabled().textInputAutocapitalization(.never)
-            Button("إنشاء") {
-                if !newFileName.isEmpty {
-                    fileManager.createFile(name: newFileName, at: fileManager.currentPath.path, isDirectory: isCreatingFolder)
-                    newFileName = ""
-                }
-            }
-            Button("إلغاء", role: .cancel) { newFileName = "" }
-        }
-        .alert("إعادة تسمية", isPresented: $showRenameDialog) {
-            TextField("الاسم الجديد", text: $newFileName).autocorrectionDisabled().textInputAutocapitalization(.never)
-            Button("حفظ") {
-                if let file = fileToRename, !newFileName.isEmpty { fileManager.renameFile(file, newName: newFileName); newFileName = "" }
-            }
-            Button("إلغاء", role: .cancel) { newFileName = "" }
-        }
-        .alert("حذف الملف", isPresented: $showDeleteAlert) {
-            Button("حذف", role: .destructive) { if let file = fileToDelete { fileManager.deleteFile(file) } }
-            Button("إلغاء", role: .cancel) {}
-        } message: { Text("هل تريد حذف \"\(fileToDelete?.name ?? "")\"؟") }
-    }
-    
-    var filesHeader: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Files")
-                    .font(.system(size: 28, weight: .black))
-                    .foregroundColor(AppColors.text)
-                Text("إدارة ملفات المشروع")
-                    .font(.system(size: 13))
-                    .foregroundColor(AppColors.textSecondary)
-            }
-            Spacer()
-            
-            Button {
-                withAnimation { isEditMode.toggle() }
-            } label: {
-                Text(isEditMode ? "تم" : "ترتيب")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(isEditMode ? Color(hex: "#6BCB77") : AppColors.textSecondary)
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(isEditMode ? Color(hex: "#6BCB77").opacity(0.15) : AppColors.surfaceElevated)
-                    .clipShape(Capsule())
-            }
-            
-            Button { showCommitSheet = true } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.up.circle.fill")
-                    Text("Push").font(.system(size: 12, weight: .semibold))
-                }
-                .foregroundColor(.white).padding(.horizontal, 12).padding(.vertical, 8)
-                .background(LinearGradient(colors: [Color(hex: "#6BCB77"), Color(hex: "#4CAF50")], startPoint: .leading, endPoint: .trailing))
-                .clipShape(Capsule())
-                .shadow(color: Color(hex: "#6BCB77").opacity(0.4), radius: 8)
-            }
-        }
-        .padding(.horizontal).padding(.top, 8).padding(.bottom, 4)
-    }
-    
-    var pathBar: some View {
-        HStack(spacing: 8) {
-            if !fileManager.isAtRoot {
-                Button { fileManager.navigateUp() } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
-                        Text("رجوع").font(.system(size: 12))
-                    }
-                    .foregroundColor(AppColors.accent).padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(AppColors.accent.opacity(0.1)).clipShape(Capsule())
-                }
-            }
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(fileManager.currentPathDisplay)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(AppColors.textSecondary).lineLimit(1)
-                    .environment(\.layoutDirection, .leftToRight)
-            }
-            Spacer()
-            if fileManager.isAtRoot {
-                Text("Files > iPhone > GitActionsHub > Projects")
-                    .font(.system(size: 9))
-                    .foregroundColor(AppColors.textSecondary.opacity(0.6))
-            }
-        }
-        .padding(.horizontal).padding(.vertical, 6)
-        .background(AppColors.surfaceElevated.opacity(0.5))
-    }
-    
-    var fileToolbar: some View {
-        HStack(spacing: 8) {
-            ToolbarButton(icon: "doc.badge.plus", label: "ملف", color: AppColors.accent) {
-                isCreatingFolder = false; newFileName = ""; showCreateDialog = true
-            }
-            ToolbarButton(icon: "folder.badge.plus", label: "مجلد", color: Color(hex: "#FFD93D")) {
-                isCreatingFolder = true; newFileName = ""; showCreateDialog = true
-            }
-            ToolbarButton(icon: "square.and.arrow.down.fill", label: "استيراد", color: Color(hex: "#6BCB77")) {
-                showImportPicker = true
-            }
-            ToolbarButton(icon: "arrow.clockwise", label: "تحديث", color: AppColors.textSecondary) {
-                fileManager.loadFiles(at: fileManager.currentPath)
-            }
-        }
-    }
-    
-    private func handleFileTap(_ file: GitFile) {
-        if file.isDirectory {
-            fileManager.loadFiles(at: URL(fileURLWithPath: file.path))
-        } else {
-            fileManager.readFile(file)
-            showFileEditor = true
-        }
-    }
-}
-
-// MARK: - File Row
-struct FileRow: View {
-    let file: GitFile
-    let depth: Int
-    let isEditMode: Bool
-    let canMoveUp: Bool
-    let canMoveDown: Bool
-    let onTap: (GitFile) -> Void
-    let onDelete: (GitFile) -> Void
-    let onRename: (GitFile) -> Void
-    let onMoveUp: () -> Void
-    let onMoveDown: () -> Void
-    
-    @State private var isExpanded = false
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 0) {
-                if isEditMode {
-                    VStack(spacing: 2) {
-                        Button { onMoveUp() } label: {
-                            Image(systemName: "chevron.up").font(.system(size: 11, weight: .bold))
-                                .foregroundColor(canMoveUp ? AppColors.accent : AppColors.border)
-                                .frame(width: 28, height: 22)
-                        }.disabled(!canMoveUp)
-                        Button { onMoveDown() } label: {
-                            Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold))
-                                .foregroundColor(canMoveDown ? AppColors.accent : AppColors.border)
-                                .frame(width: 28, height: 22)
-                        }.disabled(!canMoveDown)
-                    }.padding(.leading, 4)
-                }
+                // الخلفية
+                Color.black.ignoresSafeArea()
                 
-                Button {
-                    withAnimation(.spring(response: 0.3)) {
-                        if file.isDirectory { isExpanded.toggle() }
-                        onTap(file)
-                    }
-                } label: {
-                    HStack(spacing: 10) {
-                        if depth > 0 {
-                            Rectangle().fill(AppColors.border).frame(width: 1, height: 28)
-                                .padding(.leading, CGFloat(depth) * 16)
-                        }
-                        if file.isDirectory {
-                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(AppColors.textSecondary).frame(width: 12)
-                        } else {
-                            Spacer().frame(width: 12)
-                        }
-                        Image(systemName: file.icon).font(.system(size: 16))
-                            .foregroundColor(file.iconColor).frame(width: 20)
-                        // Fix 1: LTR for filenames
-                        Text(file.name)
-                            .font(.system(size: 14, weight: .medium, design: file.isDirectory ? .default : .monospaced))
-                            .foregroundColor(AppColors.text)
-                            .environment(\.layoutDirection, .leftToRight)
-                        Spacer()
-                        if !file.isDirectory {
-                            Text(formatSize(file.size)).font(.system(size: 10)).foregroundColor(AppColors.textSecondary)
-                        }
-                    }
-                    .padding(.vertical, 8).padding(.horizontal, 12).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                // Fix 1: Force RTL on context menu so Arabic labels show correctly
-                .contextMenu {
-                    Button {
-                        onTap(file)
-                    } label: {
-                        // Fix: explicit label with LTR system text
-                        HStack {
-                            Text(file.isDirectory ? "فتح" : "تعديل")
-                            Spacer()
-                            Image(systemName: "pencil")
-                        }
-                    }
-                    Button {
-                        onRename(file)
-                    } label: {
-                        HStack {
-                            Text("إعادة تسمية")
-                            Spacer()
-                            Image(systemName: "pencil.circle")
-                        }
-                    }
-                    Divider()
-                    Button(role: .destructive) {
-                        onDelete(file)
-                    } label: {
-                        HStack {
-                            Text("حذف")
-                            Spacer()
-                            Image(systemName: "trash")
-                        }
-                    }
-                }
-            }
-            .background(AppColors.surface.opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            
-            if file.isDirectory && isExpanded, let children = file.children {
-                ForEach(Array(children.enumerated()), id: \.element.id) { index, child in
-                    FileRow(
-                        file: child, depth: depth + 1, isEditMode: isEditMode,
-                        canMoveUp: index > 0, canMoveDown: index < children.count - 1,
-                        onTap: onTap, onDelete: onDelete, onRename: onRename,
-                        onMoveUp: onMoveUp, onMoveDown: onMoveDown
-                    )
-                    .padding(.leading, 12)
-                }
-            }
-        }
-    }
-    
-    func formatSize(_ bytes: Int64) -> String {
-        if bytes < 1024 { return "\(bytes)B" }
-        if bytes < 1024 * 1024 { return "\(bytes / 1024)KB" }
-        return "\(bytes / (1024 * 1024))MB"
-    }
-}
-
-// MARK: - File Editor
-struct FileEditorView: View {
-    let file: GitFile
-    let content: String
-    let onSave: (String) -> Void
-    
-    @State private var editedContent: String
-    @State private var hasChanges = false
-    @Environment(\.dismiss) var dismiss
-    
-    init(file: GitFile, content: String, onSave: @escaping (String) -> Void) {
-        self.file = file; self.content = content; self.onSave = onSave
-        _editedContent = State(initialValue: content)
-    }
-    
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                Color(hex: "#080810").ignoresSafeArea()
                 VStack(spacing: 0) {
-                    HStack(spacing: 8) {
-                        Image(systemName: file.icon).foregroundColor(file.iconColor)
-                        Text(file.name)
-                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                            .foregroundColor(AppColors.text)
-                            .environment(\.layoutDirection, .leftToRight)
-                        if hasChanges { Circle().fill(Color(hex: "#FFD93D")).frame(width: 6, height: 6) }
-                        Spacer()
-                        Text("\(editedContent.components(separatedBy: "\n").count) سطر")
-                            .font(.system(size: 11)).foregroundColor(AppColors.textSecondary)
+                    // ✅ شريط معلومات المستودع
+                    repoInfoBar
+                    
+                    // ✅ شريط التغييرات
+                    if fileManager.hasUncommittedChanges {
+                        changesBar
                     }
-                    .padding(.horizontal, 16).padding(.vertical, 10).background(AppColors.surface)
-                    Divider().background(AppColors.border)
-                    CodeEditorView(text: $editedContent, onChange: { hasChanges = true })
+                    
+                    // ✅ شريط تقدم الرفع
+                    if githubService.isPushing {
+                        pushProgressBar
+                    }
+                    
+                    // قائمة الملفات
+                    if fileManager.currentFiles.isEmpty && !fileManager.isLoading {
+                        emptyState
+                    } else {
+                        fileList
+                    }
                 }
             }
-            .navigationTitle("").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("📁 الملفات")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("إغلاق") { dismiss() }.foregroundColor(AppColors.textSecondary)
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        onSave(editedContent); hasChanges = false; dismiss()
-                    } label: {
-                        Text("حفظ").font(.system(size: 14, weight: .bold))
-                            .foregroundColor(hasChanges ? AppColors.accent : AppColors.textSecondary)
+                ToolbarItemGroup(placement: .navigationBarLeading) {
+                    Button { showingRepoSelector = true } label: {
+                        Image(systemName: "square.stack.3d.up")
                     }
-                    .disabled(!hasChanges)
                 }
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    Button { showingNewFileSheet = true } label: {
+                        Image(systemName: "plus")
+                    }
+                    Button { showingFilePicker = true } label: {
+                        Image(systemName: "square.and.arrow.down")
+                    }
+                    if fileManager.hasUncommittedChanges {
+                        Button { showingCommitSheet = true } label: {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .foregroundColor(.green)
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showingRepoSelector) {
+                repoSelectorSheet
+            }
+            .sheet(isPresented: $showingCommitSheet) {
+                commitSheet
+            }
+            .sheet(isPresented: $showingNewFileSheet) {
+                newFileSheet
+            }
+            .sheet(isPresented: $showingEditor) {
+                fileEditorSheet
+            }
+            .sheet(isPresented: $showingFilePicker) {
+                DocumentPicker(onPick: { url in
+                    fileManager.importFile(from: url)
+                })
+            }
+            .alert("إعادة تسمية", isPresented: $showingRenameSheet) {
+                TextField("الاسم الجديد", text: $renameText)
+                Button("إلغاء", role: .cancel) {}
+                Button("تأكيد") {
+                    if let file = renameTarget {
+                        fileManager.renameItem(file, newName: renameText)
+                    }
+                }
+            }
+            .alert("حذف", isPresented: $showingDeleteConfirm) {
+                Button("إلغاء", role: .cancel) {}
+                Button("حذف", role: .destructive) {
+                    if let file = deleteTarget {
+                        fileManager.deleteItem(file)
+                    }
+                }
+            } message: {
+                Text("هل تريد حذف \(deleteTarget?.name ?? "")؟")
             }
         }
-        .preferredColorScheme(.dark)
+        .onAppear {
+            fileManager.loadFiles()
+        }
     }
-}
-
-// MARK: - Code Editor with line numbers
-struct CodeEditorView: View {
-    @Binding var text: String
-    let onChange: () -> Void
     
-    var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .trailing, spacing: 0) {
-                ForEach(Array(text.components(separatedBy: "\n").enumerated()), id: \.offset) { index, _ in
-                    Text("\(index + 1)")
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(Color(hex: "#444460"))
-                        .frame(minWidth: 44, alignment: .trailing)
-                        .padding(.vertical, 2)
+    // MARK: - شريط معلومات المستودع
+    private var repoInfoBar: some View {
+        VStack(spacing: 4) {
+            HStack {
+                Image(systemName: "branch")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(selectedRepo != nil ? "\(owner)/\(repoName)" : "اختر مستودع")
+                    .font(.caption)
+                    .foregroundColor(selectedRepo != nil ? .primary : .secondary)
+                Spacer()
+                Text(branch)
+                    .font(.caption2)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Color.blue.opacity(0.2))
+                    .cornerRadius(4)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            
+            Divider()
+        }
+        .background(Color(.systemGray6).opacity(0.5))
+    }
+    
+    // MARK: - شريط التغييرات
+    private var changesBar: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 8))
+                    .foregroundColor(.orange)
+                Text("\(fileManager.modifiedCount) تغيير غير مرفوع")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                Spacer()
+                Button("رفع") {
+                    showingCommitSheet = true
                 }
+                .font(.caption.bold())
+                .foregroundColor(.green)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            
+            Divider()
+        }
+        .background(Color.orange.opacity(0.08))
+    }
+    
+    // MARK: - شريط تقدم الرفع ✅
+    private var pushProgressBar: some View {
+        VStack(spacing: 6) {
+            HStack {
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text(githubService.pushProgress)
+                    .font(.caption)
+                    .foregroundColor(.primary)
                 Spacer()
             }
-            .padding(.leading, 8).padding(.trailing, 12).background(Color(hex: "#0C0C18"))
             
-            Divider().background(AppColors.border)
-            
-            TextEditor(text: Binding(get: { text }, set: { text = $0; onChange() }))
-                .font(.system(size: 13, design: .monospaced))
-                .foregroundColor(AppColors.text)
-                .scrollContentBackground(.hidden)
-                .background(Color.clear)
-                .padding(.leading, 8)
-                .environment(\.layoutDirection, .leftToRight)
+            ProgressView(value: Double(githubService.pushFileIndex), total: Double(max(githubService.pushFileTotal, 1)))
+                .tint(.green)
         }
-        .background(Color(hex: "#080810"))
-    }
-}
-
-// MARK: - Commit Push Sheet
-struct CommitPushSheet: View {
-    @ObservedObject var gitHubService: GitHubService
-    @ObservedObject var fileManager: LocalFileManager
-    
-    @StateObject private var gitOps: GitOperationsManager
-    @State private var commitMessage = ""
-    @State private var selectedRepo = ""
-    @State private var selectedBranch = "main"
-    @State private var pendingFilesCount = 0
-    @Environment(\.dismiss) var dismiss
-    
-    init(gitHubService: GitHubService, fileManager: LocalFileManager) {
-        self.gitHubService = gitHubService
-        self.fileManager = fileManager
-        _gitOps = StateObject(wrappedValue: GitOperationsManager(gitHubService: gitHubService))
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(Color.green.opacity(0.08))
     }
     
-    var body: some View {
-        ZStack {
-            AppColors.background.ignoresSafeArea()
-            VStack(spacing: 0) {
-                HStack {
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark.circle.fill").font(.system(size: 22)).foregroundColor(AppColors.textSecondary)
+    // MARK: - الحالة الفارغة
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "folder.badge.plus")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary)
+            Text("لا توجد ملفات")
+                .font(.title3)
+                .foregroundColor(.secondary)
+            Text("أضف ملفات جديدة أو استورد من تطبيق الملفات")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+    }
+    
+    // MARK: - قائمة الملفات
+    private var fileList: some View {
+        List {
+            // ✅ زر العودة للمجلد الأعلى
+            if fileManager.currentPath != fileManager.getAppDirectory() {
+                Button {
+                    let parent = (fileManager.currentPath as NSString).deletingLastPathComponent
+                    fileManager.loadFiles(at: parent)
+                } label: {
+                    HStack {
+                        Image(systemName: "chevron.up")
+                            .foregroundColor(.secondary)
+                        Text("..")
+                            .foregroundColor(.secondary)
                     }
-                    Spacer()
-                    Text("Commit & Push").font(.system(size: 16, weight: .bold)).foregroundColor(AppColors.text)
-                    Spacer()
-                    if gitOps.isLoading {
-                        ProgressView().progressViewStyle(CircularProgressViewStyle(tint: AppColors.accent)).scaleEffect(0.8)
+                }
+            }
+            
+            // الملفات
+            ForEach(fileManager.currentFiles) { file in
+                fileRow(file)
+                    .contextMenu {
+                        fileContextMenu(file)
+                    }
+            }
+        }
+        .listStyle(.plain)
+    }
+    
+    // MARK: - صف الملف
+    private func fileRow(_ file: GitFile) -> some View {
+        Button {
+            if file.isDirectory {
+                fileManager.loadFiles(at: file.path)
+            } else {
+                openFile(file)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                // أيقونة
+                Image(systemName: file.isDirectory ? "folder.fill" : fileIcon(file.name))
+                    .font(.title3)
+                    .foregroundColor(file.isDirectory ? .blue : iconColor(file.name))
+                    .frame(width: 30)
+                
+                // معلومات الملف
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(file.name)
+                        .font(.body)
+                        .foregroundColor(.primary)
+                    
+                    HStack(spacing: 8) {
+                        if !file.isDirectory {
+                            Text(formatFileSize(file.size))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        // ✅ مؤشر التعديل
+                        if fileManager.modifiedFiles.contains(file.path) {
+                            Text("معدّل")
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                        }
+                        
+                        if file.isBinaryFile {
+                            Text("ثنائي")
+                                .font(.caption2)
+                                .foregroundColor(.purple)
+                        }
+                    }
+                }
+                
+                Spacer()
+                
+                if file.isDirectory {
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+    
+    // MARK: - قائمة سياق الملف
+    @ViewBuilder
+    private func fileContextMenu(_ file: GitFile) -> some View {
+        if !file.isDirectory {
+            Button { openFile(file) } label: {
+                Label("فتح", systemImage: "doc.text")
+            }
+        }
+        
+        Button {
+            renameTarget = file
+            renameText = file.name
+            showingRenameSheet = true
+        } label: {
+            Label("إعادة تسمية", systemImage: "pencil")
+        }
+        
+        Button(role: .destructive) {
+            deleteTarget = file
+            showingDeleteConfirm = true
+        } label: {
+            Label("حذف", systemImage: "trash")
+        }
+    }
+    
+    // MARK: - نافذة اختيار المستودع
+    private var repoSelectorSheet: some View {
+        NavigationStack {
+            List {
+                if githubService.isLoading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                } else if githubService.repos.isEmpty {
+                    Text("لا توجد مستودعات")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(githubService.repos) { repo in
+                        Button {
+                            selectedRepo = repo
+                            owner = repo.owner.login
+                            repoName = repo.name
+                            branch = repo.default_branch ?? "main"
+                            showingRepoSelector = false
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(repo.full_name)
+                                        .font(.body)
+                                    if let desc = repo.description, !desc.isEmpty {
+                                        Text(desc)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                                if repo.isPrivate {
+                                    Image(systemName: "lock.fill")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                if selectedRepo?.id == repo.id {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.green)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("اختر المستودع")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("إغلاق") { showingRepoSelector = false }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        Task { await githubService.fetchRepos() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if githubService.repos.isEmpty {
+                Task { await githubService.fetchRepos() }
+            }
+        }
+    }
+    
+    // MARK: - ✅ نافذة الرفع (Commit & Push)
+    private var commitSheet: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                // معلومات المستودع
+                if selectedRepo != nil {
+                    HStack {
+                        Image(systemName: "repo")
+                            .foregroundColor(.secondary)
+                        Text("\(owner)/\(repoName)")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(branch)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Color.blue.opacity(0.2))
+                            .cornerRadius(4)
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
+                }
+                
+                // رسالة الالتزام
+                TextField("رسالة الالتزام...", text: $commitMessage)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+                
+                // ✅ عدد الملفات المطلوب رفعها
+                let filesToPush = fileManager.collectModifiedFiles()
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("الملفات المطلوب رفعها:")
+                            .font(.caption.bold())
+                        Spacer()
+                        Text("\(filesToPush.count) ملف")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    if filesToPush.count <= 10 {
+                        ForEach(filesToPush) { file in
+                            HStack {
+                                Image(systemName: file.isBinary ? "doc.binary" : "doc.text")
+                                    .font(.caption)
+                                    .foregroundColor(file.isBinary ? .purple : .secondary)
+                                Text(file.path)
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(formatFileSize(file.size))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    } else {
+                        ForEach(filesToPush.prefix(5)) { file in
+                            HStack {
+                                Image(systemName: file.isBinary ? "doc.binary" : "doc.text")
+                                    .font(.caption)
+                                    .foregroundColor(file.isBinary ? .purple : .secondary)
+                                Text(file.path)
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(formatFileSize(file.size))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Text("... و \(filesToPush.count - 5) ملف آخر")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
                 .padding()
-                Divider().background(AppColors.border)
+                .background(Color(.systemGray6))
+                .cornerRadius(10)
                 
-                ScrollView {
-                    VStack(spacing: 16) {
-                        // Files count badge
-                        HStack {
-                            Image(systemName: "doc.fill")
-                                .foregroundColor(AppColors.accent)
-                            Text("\(pendingFilesCount) ملف سيتم رفعه")
-                                .font(.system(size: 13))
-                                .foregroundColor(AppColors.text)
-                            Spacer()
-                            Text("نصية فقط")
-                                .font(.system(size: 11))
-                                .foregroundColor(AppColors.textSecondary)
-                        }
-                        .padding(12)
-                        .background(AppColors.accent.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(AppColors.accent.opacity(0.2), lineWidth: 1))
-                        
-                        // Commit message
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("رسالة Commit", systemImage: "text.bubble.fill")
-                                .font(.system(size: 13, weight: .semibold)).foregroundColor(AppColors.textSecondary)
-                            TextField("مثال: fix: إصلاح خطأ في ملف...", text: $commitMessage, axis: .vertical)
-                                .font(.system(size: 14)).foregroundColor(AppColors.text)
-                                .padding(12).background(AppColors.surfaceElevated)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(AppColors.border, lineWidth: 1))
-                                .lineLimit(3...8)
-                                .environment(\.layoutDirection, .rightToLeft)
-                        }
-                        
-                        // Repo & Branch
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Label("Repository", systemImage: "square.stack.3d.up.fill")
-                                    .font(.system(size: 12, weight: .semibold)).foregroundColor(AppColors.textSecondary)
-                                Picker("", selection: $selectedRepo) {
-                                    Text("اختر...").tag("")
-                                    ForEach(gitHubService.repositories) { repo in
-                                        Text(repo.name).tag(repo.name)
-                                            .environment(\.layoutDirection, .leftToRight)
-                                    }
-                                }
-                                .pickerStyle(.menu).padding(10).background(AppColors.surfaceElevated)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(AppColors.border, lineWidth: 1))
-                            }
-                            
-                            VStack(alignment: .leading, spacing: 8) {
-                                Label("Branch", systemImage: "arrow.triangle.branch")
-                                    .font(.system(size: 12, weight: .semibold)).foregroundColor(AppColors.textSecondary)
-                                TextField("main", text: $selectedBranch)
-                                    .font(.system(size: 13, design: .monospaced)).foregroundColor(AppColors.text)
-                                    .padding(10).background(AppColors.surfaceElevated)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(AppColors.border, lineWidth: 1))
-                                    .frame(width: 100)
-                                    .environment(\.layoutDirection, .leftToRight)
-                            }
-                        }
-                        
-                        // Commit history
-                        if !gitOps.commitHistory.isEmpty {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Label("آخر Commits", systemImage: "clock.arrow.circlepath")
-                                    .font(.system(size: 13, weight: .semibold)).foregroundColor(AppColors.textSecondary)
-                                ForEach(gitOps.commitHistory.prefix(3)) { commit in
-                                    HStack(spacing: 8) {
-                                        Text(commit.sha ?? "•••••••")
-                                            .font(.system(size: 11, design: .monospaced)).foregroundColor(AppColors.accent)
-                                        Text(commit.message).font(.system(size: 12)).foregroundColor(AppColors.text).lineLimit(1)
-                                        Spacer()
-                                        Text(commit.branch).font(.system(size: 10)).foregroundColor(AppColors.textSecondary)
-                                    }
-                                    .padding(10).background(AppColors.surfaceElevated).clipShape(RoundedRectangle(cornerRadius: 8))
-                                    .environment(\.layoutDirection, .leftToRight)
-                                }
-                            }
-                        }
-                        
-                        // Result
-                        if let result = gitOps.lastCommitResult {
-                            Text(result).font(.system(size: 13))
-                                .foregroundColor(result.hasPrefix("✅") ? Color(hex: "#6BCB77") : Color(hex: "#FF6B6B"))
-                                .padding(12).frame(maxWidth: .infinity)
-                                .background((result.hasPrefix("✅") ? Color(hex: "#6BCB77") : Color(hex: "#FF6B6B")).opacity(0.1))
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                                .multilineTextAlignment(.center)
-                        }
+                // ✅ تحذير إذا لم يتم اختيار مستودع
+                if selectedRepo == nil {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("اختر مستودع أولاً من الأعلى")
+                            .font(.caption)
+                            .foregroundColor(.orange)
                     }
                     .padding()
+                    .background(Color.orange.opacity(0.1))
+                    .cornerRadius(10)
                 }
                 
-                Button { pushToGitHub() } label: {
-                    HStack(spacing: 10) {
-                        if gitOps.isLoading {
-                            ProgressView().progressViewStyle(CircularProgressViewStyle(tint: .white)).scaleEffect(0.8)
-                        } else {
-                            Image(systemName: "arrow.up.circle.fill").font(.system(size: 20))
-                        }
-                        Text(gitOps.isLoading ? "جارٍ الرفع..." : "Commit & Push").font(.system(size: 16, weight: .bold))
-                    }
-                    .foregroundColor(.white).frame(maxWidth: .infinity).frame(height: 54)
-                    .background(LinearGradient(
-                        colors: canPush ? [Color(hex: "#6BCB77"), Color(hex: "#4CAF50")] : [AppColors.border, AppColors.border],
-                        startPoint: .leading, endPoint: .trailing
-                    ))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .shadow(color: canPush ? Color(hex: "#6BCB77").opacity(0.3) : .clear, radius: 10)
-                }
-                .disabled(!canPush || gitOps.isLoading).padding()
+                Spacer()
             }
-        }
-        .preferredColorScheme(.dark)
-        .onAppear {
-            Task { await gitHubService.fetchRepositories() }
-            // Count files upfront
-            let files = fileManager.collectAllFiles(from: fileManager.rootFiles)
-            pendingFilesCount = files.count
+            .padding()
+            .navigationTitle("رفع التغييرات")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("إلغاء") { showingCommitSheet = false }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("رفع") {
+                        Task { await performPush() }
+                    }
+                    .bold()
+                    .foregroundColor(selectedRepo == nil || commitMessage.isEmpty ? .gray : .green)
+                    .disabled(selectedRepo == nil || commitMessage.isEmpty || githubService.isPushing)
+                }
+            }
         }
     }
     
-    var canPush: Bool { !commitMessage.isEmpty && !selectedRepo.isEmpty && pendingFilesCount > 0 }
+    // MARK: - ✅ تنفيذ الرفع
+    private func performPush() async {
+        guard selectedRepo != nil else { return }
+        
+        let files = fileManager.collectModifiedFiles()
+        
+        let success = await githubService.pushFiles(
+            owner: owner,
+            repo: repoName,
+            branch: branch,
+            message: commitMessage,
+            files: files,
+            fileManager: fileManager
+        )
+        
+        await MainActor.run {
+            showingCommitSheet = false
+            
+            if success {
+                commitMessage = ""
+            }
+        }
+    }
     
-    private func pushToGitHub() {
-        guard let user = gitHubService.currentUser else { return }
-        // Fix: Use collectAllFiles to get text files recursively
-        let files = fileManager.collectAllFiles(from: fileManager.rootFiles)
-        guard !files.isEmpty else {
-            gitOps.lastCommitResult = "❌ لا توجد ملفات نصية للرفع"
+    // MARK: - نافذة إنشاء ملف جديد
+    private var newFileSheet: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                Toggle("مجلد", isOn: $isNewDirectory)
+                    .padding(.horizontal)
+                
+                TextField("اسم الملف أو المجلد", text: $newFileName)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+                
+                if !isNewDirectory {
+                    TextEditor(text: $newFileContent)
+                        .font(.system(.body, design: .monospaced))
+                        .border(Color(.systemGray4), width: 1)
+                        .frame(minHeight: 200)
+                        .padding(.horizontal)
+                }
+                
+                Spacer()
+            }
+            .padding(.top)
+            .navigationTitle(isNewDirectory ? "مجلد جديد" : "ملف جديد")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("إلغاء") {
+                        newFileName = ""
+                        newFileContent = ""
+                        isNewDirectory = false
+                        showingNewFileSheet = false
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("إنشاء") {
+                        if isNewDirectory {
+                            fileManager.createDirectory(name: newFileName)
+                        } else {
+                            fileManager.createFile(name: newFileName, content: newFileContent)
+                        }
+                        newFileName = ""
+                        newFileContent = ""
+                        isNewDirectory = false
+                        showingNewFileSheet = false
+                    }
+                    .disabled(newFileName.isEmpty)
+                }
+            }
+        }
+    }
+    
+    // MARK: - نافذة تعديل الملف
+    private var fileEditorSheet: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let file = editingFile {
+                    TextEditor(text: $editingContent)
+                        .font(.system(.body, design: .monospaced))
+                        .padding()
+                }
+            }
+            .navigationTitle(editingFile?.name ?? "تعديل")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("إلغاء") {
+                        editingFile = nil
+                        editingContent = ""
+                        showingEditor = false
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("حفظ") {
+                        if let file = editingFile {
+                            fileManager.writeFile(file, content: editingContent)
+                        }
+                        editingFile = nil
+                        editingContent = ""
+                        showingEditor = false
+                    }
+                    .bold()
+                    .foregroundColor(.green)
+                }
+            }
+        }
+    }
+    
+    // MARK: - فتح ملف
+    private func openFile(_ file: GitFile) {
+        if file.isBinaryFile {
+            // لا يمكن تعديل الملفات الثنائية
             return
         }
-        Task {
-            _ = await gitOps.commitAndPush(
-                owner: user.login,
-                repo: selectedRepo,
-                branch: selectedBranch,
-                message: commitMessage,
-                files: files
-            )
+        
+        if let content = fileManager.readFileContent(file) {
+            editingFile = file
+            editingContent = content
+            showingEditor = true
         }
+    }
+    
+    // MARK: - أيقونة الملف
+    private func fileIcon(_ name: String) -> String {
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "swift": return "swift"
+        case "js", "ts", "jsx", "tsx": return "doc.text.javascript"
+        case "py": return "doc.text.python"
+        case "html": return "doc.text.html"
+        case "css": return "doc.text.css"
+        case "json": return "doc.text.json"
+        case "md": return "doc.text.markdown"
+        case "yaml", "yml": return "doc.text.config"
+        case "png", "jpg", "jpeg", "gif", "svg", "webp": return "photo"
+        case "pdf": return "doc.pdf"
+        case "zip", "tar", "gz": return "doc.zipper"
+        default: return "doc.text"
+        }
+    }
+    
+    // MARK: - لون الأيقونة
+    private func iconColor(_ name: String) -> Color {
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "swift": return .orange
+        case "js": return .yellow
+        case "ts": return .blue
+        case "py": return .green
+        case "html": return .red
+        case "css": return .purple
+        case "json": return .cyan
+        case "md": return .white
+        case "yaml", "yml": return .pink
+        case "png", "jpg", "jpeg", "gif", "svg", "webp": return .teal
+        default: return .secondary
+        }
+    }
+    
+    // MARK: - تنسيق حجم الملف
+    private func formatFileSize(_ size: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: size)
     }
 }
 
-// MARK: - Toolbar Button
-struct ToolbarButton: View {
-    let icon: String; let label: String; let color: Color; let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: icon).font(.system(size: 14))
-                Text(label).font(.system(size: 12, weight: .medium))
-            }
-            .foregroundColor(color).padding(.horizontal, 12).padding(.vertical, 8)
-            .background(color.opacity(0.12)).clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(color.opacity(0.25), lineWidth: 1))
+// MARK: - Document Picker
+struct DocumentPicker: UIViewControllerRepresentable {
+    var onPick: (URL) -> Void
+    
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item])
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = true
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+    
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            for url in urls { onPick(url) }
         }
     }
 }
