@@ -3,7 +3,6 @@ import SwiftUI
 
 class GitHubService: ObservableObject {
     
-    // MARK: - Published Properties
     @Published var repos: [Repo] = []
     @Published var workflowRuns: [WorkflowRun] = []
     @Published var logLines: [LogLine] = []
@@ -11,11 +10,12 @@ class GitHubService: ObservableObject {
     @Published var isLoading = false
     @Published var lastCommitResult: String?
     
-    // ✅ خصائص مفقودة تستخدمها Views القديمة
     @Published var currentUser: GitHubUser?
     @Published var isAuthenticated: Bool = false
     
-    // ✅ حالة الرفع
+    // ✅ buildLogs — تستخدمها ActionsView
+    @Published var buildLogs: [BuildLog] = []
+    
     @Published var isPushing = false
     @Published var pushProgress: String = ""
     @Published var pushFileIndex: Int = 0
@@ -23,21 +23,17 @@ class GitHubService: ObservableObject {
     
     private let baseURL = "https://api.github.com"
     
-    // MARK: - Token Management
-    private var _token: String {
+    var token: String {
         UserDefaults.standard.string(forKey: "gh_access_token") ?? ""
     }
-    
-    var token: String { _token }
     
     var username: String {
         UserDefaults.standard.string(forKey: "gh_username") ?? ""
     }
     
-    // ✅ Alias للخصائص — تستخدمها Views القديمة
+    // ✅ Alias
     var repositories: [GitHubRepo] { repos }
     
-    // MARK: - Generic Request Helper
     private func makeRequest(_ path: String, method: String = "GET", body: Data? = nil) -> URLRequest {
         let url = URL(string: "\(baseURL)\(path)")!
         var req = URLRequest(url: url)
@@ -49,12 +45,11 @@ class GitHubService: ObservableObject {
         return req
     }
     
-    // MARK: - ✅ loadSavedToken — تستخدمها ContentView
+    // MARK: - Token & Auth
     func loadSavedToken() {
         let savedToken = UserDefaults.standard.string(forKey: "gh_access_token")
-        if let token = savedToken, !token.isEmpty {
+        if let t = savedToken, !t.isEmpty {
             isAuthenticated = true
-            // تحميل بيانات المستخدم المحفوظة
             loadSavedUser()
         } else {
             isAuthenticated = false
@@ -74,29 +69,20 @@ class GitHubService: ObservableObject {
         UserDefaults.standard.set(user.login, forKey: "gh_username")
     }
     
-    // MARK: - ✅ authenticateWithOAuth — تستخدمها LoginView
     func authenticateWithOAuth(token: String) async {
         guard !token.isEmpty else {
-            await MainActor.run { self.error = "❌ التوكن فارغ" }
+            await MainActor.run { self.error = "التوكن فارغ" }
             return
         }
-        
-        // حفظ التوكن
         UserDefaults.standard.set(token, forKey: "gh_access_token")
         
-        // التحقق من التوكن وجلب بيانات المستخدم
         var req = URLRequest(url: URL(string: "\(baseURL)/user")!)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         
         do {
             let (data, response) = try await URLSession.shared.data(for: req)
-            
-            guard let httpResponse = response as? HTTPURLResponse else {
-                await MainActor.run { self.error = "❌ استجابة غير صالحة" }
-                return
-            }
-            
+            guard let httpResponse = response as? HTTPURLResponse else { return }
             if httpResponse.statusCode == 200 {
                 let user = try JSONDecoder().decode(GitHubUser.self, from: data)
                 await MainActor.run {
@@ -106,22 +92,18 @@ class GitHubService: ObservableObject {
                 }
                 saveUser(user)
             } else {
-                // التوكن غير صالح
                 UserDefaults.standard.removeObject(forKey: "gh_access_token")
                 await MainActor.run {
                     self.currentUser = nil
                     self.isAuthenticated = false
-                    self.error = "❌ التوكن غير صالح"
+                    self.error = "التوكن غير صالح"
                 }
             }
         } catch {
-            await MainActor.run {
-                self.error = "❌ فشل الاتصال: \(error.localizedDescription)"
-            }
+            await MainActor.run { self.error = "فشل الاتصال: \(error.localizedDescription)" }
         }
     }
     
-    // MARK: - ✅ logout — تستخدمها ReposView
     func logout() {
         UserDefaults.standard.removeObject(forKey: "gh_access_token")
         UserDefaults.standard.removeObject(forKey: "gh_user_data")
@@ -131,23 +113,19 @@ class GitHubService: ObservableObject {
         repos = []
         workflowRuns = []
         logLines = []
+        buildLogs = []
         error = nil
     }
     
-    // MARK: - Token Validation
     func validateToken(_ token: String) async -> Bool {
         var req = URLRequest(url: URL(string: "\(baseURL)/user")!)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        
         do {
             let (data, response) = try await URLSession.shared.data(for: req)
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 let user = try JSONDecoder().decode(GitHubUser.self, from: data)
-                await MainActor.run {
-                    self.currentUser = user
-                    self.isAuthenticated = true
-                }
+                await MainActor.run { self.currentUser = user; self.isAuthenticated = true }
                 saveUser(user)
                 return true
             }
@@ -155,70 +133,75 @@ class GitHubService: ObservableObject {
         return false
     }
     
-    // MARK: - ✅ fetchRepositories — Alias تستخدمها Views القديمة
-    func fetchRepositories() async {
-        await fetchRepos()
-    }
+    func fetchRepositories() async { await fetchRepos() }
     
-    // MARK: - Fetch Repos
     func fetchRepos() async {
         await MainActor.run { isLoading = true; error = nil }
-        
         var allRepos: [Repo] = []
         var page = 1
-        
         repeat {
             let req = makeRequest("/user/repos?sort=updated&per_page=100&page=\(page)")
             do {
                 let (data, response) = try await URLSession.shared.data(for: req)
                 guard let httpResponse = response as? HTTPURLResponse else { break }
-                
                 if httpResponse.statusCode == 401 {
-                    await MainActor.run { error = "❌ التوكن غير صالح — سجّل الدخول مجدداً"; isLoading = false }
+                    await MainActor.run { error = "التوكن غير صالح"; isLoading = false }
                     return
                 }
-                
                 let pageRepos = try JSONDecoder().decode([Repo].self, from: data)
                 allRepos.append(contentsOf: pageRepos)
-                
                 if pageRepos.count < 100 { break }
                 page += 1
             } catch {
-                await MainActor.run { self.error = "تعذّر جلب المستودعات: \(error.localizedDescription)"; isLoading = false }
+                await MainActor.run { self.error = "تعذر جلب المستودعات"; isLoading = false }
                 return
             }
         } while true
-        
-        await MainActor.run {
-            self.repos = allRepos
-            self.isLoading = false
-        }
+        let finalRepos = allRepos
+        await MainActor.run { self.repos = finalRepos; self.isLoading = false }
     }
     
-    // MARK: - Fetch Workflow Runs
     func fetchWorkflowRuns(owner: String, repo: String) async {
         await MainActor.run { isLoading = true; error = nil }
-        
         let req = makeRequest("/repos/\(owner)/\(repo)/actions/runs?per_page=50")
         do {
             let (data, response) = try await URLSession.shared.data(for: req)
-            
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 404 {
-                await MainActor.run { error = "❌ المستودع غير موجود أو ليس لديك صلاحية"; isLoading = false }
+                await MainActor.run { error = "المستودع غير موجود"; isLoading = false }
                 return
             }
-            
             let result = try JSONDecoder().decode(WorkflowRunsResponse.self, from: data)
             await MainActor.run { workflowRuns = result.workflow_runs; isLoading = false }
         } catch {
-            await MainActor.run { self.error = "تعذّر جلب الأكشنز: \(error.localizedDescription)"; isLoading = false }
+            await MainActor.run { self.error = "تعذر جلب الاكشنز"; isLoading = false }
         }
     }
     
-    // MARK: - Fetch Build Logs
+    // ✅ fetchWorkflowJobs — تستخدمها ActionsView
+    func fetchWorkflowJobs(owner: String, repo: String, runId: Int) async {
+        let req = makeRequest("/repos/\(owner)/\(repo)/actions/runs/\(runId)/jobs")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return }
+            let result = try JSONDecoder().decode(WorkflowJobsResponse.self, from: data)
+            
+            // جلب سجلات أول job
+            if let firstJob = result.jobs.first {
+                let logsReq = makeRequest("/repos/\(owner)/\(repo)/actions/jobs/\(firstJob.id)/logs")
+                let (logsData, _) = try await URLSession.shared.data(for: logsReq)
+                if let logText = String(data: logsData, encoding: .utf8) {
+                    let lines = logText.components(separatedBy: "\n")
+                    let logs = lines.enumerated().map { i, line in
+                        BuildLog(id: i, lineNumber: i + 1, text: line, timestamp: nil)
+                    }
+                    await MainActor.run { self.buildLogs = logs }
+                }
+            }
+        } catch {}
+    }
+    
     func fetchLogs(owner: String, repo: String, runId: Int) async {
         await MainActor.run { isLoading = true; logLines = []; error = nil }
-        
         let jobsReq = makeRequest("/repos/\(owner)/\(repo)/actions/runs/\(runId)/jobs")
         do {
             let (jobsData, _) = try await URLSession.shared.data(for: jobsReq)
@@ -226,61 +209,51 @@ class GitHubService: ObservableObject {
                   let jobs = jobsJson["jobs"] as? [[String: Any]],
                   let firstJob = jobs.first,
                   let jobId = firstJob["id"] as? Int else {
-                await MainActor.run { error = "❌ لا توجد مهام"; isLoading = false }
+                await MainActor.run { error = "لا توجد مهام"; isLoading = false }
                 return
             }
-            
             let logsReq = makeRequest("/repos/\(owner)/\(repo)/actions/jobs/\(jobId)/logs")
             let (logsData, _) = try await URLSession.shared.data(for: logsReq)
-            
             guard let logText = String(data: logsData, encoding: .utf8) else {
-                await MainActor.run { error = "❌ تعذّر قراءة السجلات"; isLoading = false }
+                await MainActor.run { error = "تعذر قراءة السجلات"; isLoading = false }
                 return
             }
-            
             let lines = logText.components(separatedBy: "\n")
-            let logLines = lines.enumerated().map { index, line in
-                LogLine(id: index + 1, text: line)
-            }
-            
+            let logLines = lines.enumerated().map { LogLine(id: $0.offset + 1, text: $0.element) }
             await MainActor.run { self.logLines = logLines; isLoading = false }
-            
         } catch {
-            await MainActor.run { self.error = "تعذّر جلب السجلات: \(error.localizedDescription)"; isLoading = false }
+            await MainActor.run { self.error = "تعذر جلب السجلات"; isLoading = false }
         }
     }
     
-    // MARK: - Fetch Jobs for a Run ✅
     func fetchJobs(owner: String, repo: String, runId: Int) async -> [WorkflowJob] {
         let req = makeRequest("/repos/\(owner)/\(repo)/actions/runs/\(runId)/jobs")
         do {
             let (data, response) = try await URLSession.shared.data(for: req)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else { return [] }
-            let result = try JSONDecoder().decode(WorkflowJobsResponse.self, from: data)
-            return result.jobs
-        } catch {
-            return []
-        }
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return [] }
+            return try JSONDecoder().decode(WorkflowJobsResponse.self, from: data).jobs
+        } catch { return [] }
     }
     
-    // MARK: - Fetch Job Logs ✅
     func fetchJobLogs(owner: String, repo: String, jobId: Int) async -> [BuildLog] {
         let req = makeRequest("/repos/\(owner)/\(repo)/actions/jobs/\(jobId)/logs")
         do {
             let (data, _) = try await URLSession.shared.data(for: req)
             guard let logText = String(data: data, encoding: .utf8) else { return [] }
-            
-            let lines = logText.components(separatedBy: "\n")
-            return lines.enumerated().map { index, line in
-                BuildLog(id: index, lineNumber: index + 1, text: line, timestamp: nil)
+            return logText.components(separatedBy: "\n").enumerated().map { i, line in
+                BuildLog(id: i, lineNumber: i + 1, text: line, timestamp: nil)
             }
-        } catch {
-            return []
-        }
+        } catch { return [] }
     }
     
-    // MARK: - ✅ رفع الملفات — Contents API
+    // ✅ deleteRepository — تستخدمها ReposView
+    func deleteRepository(repo: GitHubRepo) async {
+        let req = makeRequest("/repos/\(repo.owner.login)/\(repo.name)", method: "DELETE")
+        _ = try? await URLSession.shared.data(for: req)
+        await fetchRepos()
+    }
+    
+    // MARK: - رفع الملفات
     func pushFiles(
         owner: String,
         repo: String,
@@ -299,18 +272,11 @@ class GitHubService: ObservableObject {
         }
         
         guard !token.isEmpty else {
-            await MainActor.run {
-                error = "❌ لم يتم العثور على التوكن"
-                isPushing = false
-            }
+            await MainActor.run { error = "التوكن غير موجود"; isPushing = false }
             return false
         }
-        
         guard !files.isEmpty else {
-            await MainActor.run {
-                lastCommitResult = "⚠️ لا توجد ملفات للرفع"
-                isPushing = false
-            }
+            await MainActor.run { lastCommitResult = "لا توجد ملفات"; isPushing = false }
             return false
         }
         
@@ -324,8 +290,123 @@ class GitHubService: ObservableObject {
                 pushProgress = "رفع \(index + 1)/\(files.count): \(file.path)"
             }
             
+            let filePath = file.path
             let success = await uploadSingleFile(
                 owner: owner,
                 repo: repo,
                 branch: branch,
-                message: "\(message) — \(file.path
+                message: message + " - " + filePath,
+                file: file
+            )
+            
+            if success { successCount += 1 }
+            else { failCount += 1; failedFiles.append(filePath) }
+        }
+        
+        let sCount = successCount
+        let fCount = failCount
+        let fFiles = failedFiles
+        
+        await MainActor.run {
+            isPushing = false
+            if fCount == 0 {
+                lastCommitResult = "تم رفع \(sCount) ملف بنجاح!"
+                fileManager.clearModifications()
+            } else if sCount > 0 {
+                lastCommitResult = "رفع \(sCount) ملف، فشل \(fCount)"
+                fileManager.clearModifications()
+            } else {
+                lastCommitResult = "فشل رفع جميع الملفات"
+            }
+            pushProgress = ""
+        }
+        return successCount > 0
+    }
+    
+    private func uploadSingleFile(
+        owner: String,
+        repo: String,
+        branch: String,
+        message: String,
+        file: FileToPush
+    ) async -> Bool {
+        let encodedPath = file.path
+            .replacingOccurrences(of: " ", with: "%20")
+            .replacingOccurrences(of: "[", with: "%5B")
+            .replacingOccurrences(of: "]", with: "%5D")
+        
+        let existingSHA = await getFileSHA(owner: owner, repo: repo, path: file.path, branch: branch)
+        
+        guard let url = URL(string: "\(baseURL)/repos/\(owner)/\(repo)/contents/\(encodedPath)?ref=\(branch)") else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        var body: [String: Any] = [
+            "message": message,
+            "branch": branch,
+            "content": file.content
+        ]
+        if let sha = existingSHA { body["sha"] = sha }
+        
+        do {
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (_, response) = try await URLSession.shared.data(for: req)
+            if let httpResponse = response as? HTTPURLResponse {
+                switch httpResponse.statusCode {
+                case 200, 201: return true
+                case 404: return await handleEmptyRepo(owner: owner, repo: repo, branch: branch, file: file)
+                default: return false
+                }
+            }
+        } catch {}
+        return false
+    }
+    
+    private func getFileSHA(owner: String, repo: String, path: String, branch: String) async -> String? {
+        let encodedPath = path.replacingOccurrences(of: " ", with: "%20")
+        let req = makeRequest("/repos/\(owner)/\(repo)/contents/\(encodedPath)?ref=\(branch)")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
+            let content = try JSONDecoder().decode(GitHubContent.self, from: data)
+            return content.sha
+        } catch { return nil }
+    }
+    
+    private func handleEmptyRepo(owner: String, repo: String, branch: String, file: FileToPush) async -> Bool {
+        let encodedPath = file.path.replacingOccurrences(of: " ", with: "%20")
+        guard let url = URL(string: "\(baseURL)/repos/\(owner)/\(repo)/contents/\(encodedPath)") else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["message": "Initial commit - " + file.path, "branch": branch, "content": file.content]
+        do {
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (_, response) = try await URLSession.shared.data(for: req)
+            if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) { return true }
+        } catch {}
+        return false
+    }
+    
+    func getDefaultBranch(owner: String, repo: String) async -> String {
+        let req = makeRequest("/repos/\(owner)/\(repo)")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return "main" }
+            return try JSONDecoder().decode(Repo.self, from: data).default_branch ?? "main"
+        } catch { return "main" }
+    }
+    
+    func reRunWorkflow(owner: String, repo: String, runId: Int) async {
+        _ = try? await URLSession.shared.data(for: makeRequest("/repos/\(owner)/\(repo)/actions/runs/\(runId)/rerun", method: "POST"))
+    }
+    
+    func cancelWorkflow(owner: String, repo: String, runId: Int) async {
+        _ = try? await URLSession.shared.data(for: makeRequest("/repos/\(owner)/\(repo)/actions/runs/\(runId)/cancel", method: "POST"))
+    }
+}
