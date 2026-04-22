@@ -1,33 +1,20 @@
 import Foundation
 
-// نوع الملف للرفع
-struct FileToPush: Identifiable {
-    let id = UUID()
-    let path: String
-    let content: String
-    let isBinary: Bool
-    let size: Int64
-}
-
 class LocalFileManager: ObservableObject {
     
-    // MARK: - Published Properties
     @Published var rootFiles: [GitFile] = []
     @Published var currentPath: String = ""
     @Published var error: String?
     @Published var currentFiles: [GitFile] = []
     @Published var isLoading = false
     
-    // ✅ تتبع الملفات المعدّلة
     @Published var modifiedFiles: Set<String> = []
     @Published var hasUncommittedChanges: Bool = false
     
-    // ✅ إحصائيات الرفع
     @Published var uploadProgress: String = ""
     @Published var uploadedCount: Int = 0
     @Published var totalToUpload: Int = 0
     
-    // MARK: - Extensions
     static let textExtensions: Set<String> = [
         "swift", "m", "h", "mm", "hpp", "cpp", "c", "cs", "java", "kt", "py",
         "rb", "js", "ts", "jsx", "tsx", "html", "css", "scss", "less", "json",
@@ -47,18 +34,15 @@ class LocalFileManager: ObservableObject {
         "xcassets", "nib", "xib", "storyboardc", "ipa", "apk", "aab"
     ]
     
-    // MARK: - إنشاء مجلد التطبيق
     func getAppDirectory() -> String {
         let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0]
         let appDir = (docs as NSString).appendingPathComponent("GitActionsHub")
-        
         if !FileManager.default.fileExists(atPath: appDir) {
             try? FileManager.default.createDirectory(atPath: appDir, withIntermediateDirectories: true)
         }
         return appDir
     }
     
-    // MARK: - تحميل الملفات
     func loadFiles(at path: String? = nil) {
         let basePath = getAppDirectory()
         let targetPath = path ?? basePath
@@ -69,17 +53,18 @@ class LocalFileManager: ObservableObject {
             var files: [GitFile] = []
             
             for item in items {
-                if item.hasPrefix(".") { continue } // إخفاء الملفات المخفية
+                if item.hasPrefix(".") { continue }
                 
                 let fullPath = (targetPath as NSString).appendingPathComponent(item)
-                var isDir: ObjCBool = false
-                FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
+                var isDirectory: ObjCBool = false
+                FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDirectory)
                 
                 let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath)
                 let size = (attrs?[.size] as? Int64) ?? 0
                 let modDate = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
                 
-                let isDir = isDir.boolValue
+                // ✅ إصلاح: استخدام isDirectory.boolValue بدلاً من isDir مكرر
+                let itemIsDirectory = isDirectory.boolValue
                 let ext = (item as NSString).pathExtension.lowercased()
                 let isText = Self.textExtensions.contains(ext) || ext.isEmpty || item.hasPrefix(".")
                 let isBinary = Self.binaryExtensions.contains(ext)
@@ -87,24 +72,21 @@ class LocalFileManager: ObservableObject {
                 files.append(GitFile(
                     name: item,
                     path: fullPath,
-                    isDirectory: isDir,
+                    isDirectory: itemIsDirectory,
                     size: size,
                     modificationDate: modDate,
-                    isTextFile: !isDir && isText,
-                    isBinaryFile: !isDir && isBinary,
+                    isTextFile: !itemIsDirectory && isText,
+                    isBinaryFile: !itemIsDirectory && isBinary,
                     content: nil
                 ))
             }
             
-            // ترتيب: المجلدات أولاً، ثم أبجدياً
             files.sort { a, b in
                 if a.isDirectory != b.isDirectory { return a.isDirectory }
                 return a.name.lowercased() < b.name.lowercased()
             }
             
-            if path == nil {
-                rootFiles = files
-            }
+            if path == nil { rootFiles = files }
             currentFiles = files
             error = nil
             
@@ -113,7 +95,6 @@ class LocalFileManager: ObservableObject {
         }
     }
     
-    // MARK: - قراءة محتوى ملف
     func readFileContent(_ file: GitFile) -> String? {
         let url = URL(fileURLWithPath: file.path)
         if file.isTextFile {
@@ -126,7 +107,6 @@ class LocalFileManager: ObservableObject {
         return nil
     }
     
-    // MARK: - كتابة ملف (مع تتبع التعديل) ✅
     func writeFile(_ file: GitFile, content: String) {
         do {
             let url = URL(fileURLWithPath: file.path)
@@ -143,17 +123,14 @@ class LocalFileManager: ObservableObject {
         }
     }
     
-    // MARK: - إنشاء ملف جديد ✅
     func createFile(name: String, in directory: String? = nil, content: String = "") {
         let dir = directory ?? currentPath
         let fullPath = (dir as NSString).appendingPathComponent(name)
-        
         let ext = (name as NSString).pathExtension.lowercased()
         let isBinary = Self.binaryExtensions.contains(ext)
         
         do {
             if isBinary {
-                // إنشاء ملف ثنائي فارغ
                 FileManager.default.createFile(atPath: fullPath, contents: nil)
             } else {
                 try content.write(toFile: fullPath, atomically: true, encoding: .utf8)
@@ -166,11 +143,9 @@ class LocalFileManager: ObservableObject {
         }
     }
     
-    // MARK: - إنشاء مجلد جديد ✅
     func createDirectory(name: String, in directory: String? = nil) {
         let dir = directory ?? currentPath
         let fullPath = (dir as NSString).appendingPathComponent(name)
-        
         do {
             try FileManager.default.createDirectory(atPath: fullPath, withIntermediateDirectories: true)
             loadFiles(at: dir)
@@ -179,7 +154,6 @@ class LocalFileManager: ObservableObject {
         }
     }
     
-    // MARK: - حذف ملف أو مجلد ✅
     func deleteItem(_ file: GitFile) {
         do {
             try FileManager.default.removeItem(atPath: file.path)
@@ -191,7 +165,6 @@ class LocalFileManager: ObservableObject {
         }
     }
     
-    // MARK: - إعادة تسمية ✅
     func renameItem(_ file: GitFile, newName: String) {
         let newFullPath = (currentPath as NSString).appendingPathComponent(newName)
         do {
@@ -205,7 +178,6 @@ class LocalFileManager: ObservableObject {
         }
     }
     
-    // MARK: - استيراد من تطبيق الملفات ✅
     func importFile(from url: URL, to directory: String? = nil) {
         let dir = directory ?? currentPath
         let fileName = url.lastPathComponent
@@ -230,7 +202,6 @@ class LocalFileManager: ObservableObject {
         }
     }
     
-    // MARK: - جمع الملفات للرفع ✅ (مع دعم الثنائية)
     func collectAllFiles(from files: [GitFile], basePath: String = "") -> [FileToPush] {
         var result: [FileToPush] = []
         
@@ -238,14 +209,13 @@ class LocalFileManager: ObservableObject {
             let relativePath = basePath.isEmpty ? file.name : "\(basePath)/\(file.name)"
             
             if file.isDirectory {
-                let subPath = (file.path as NSString)
                 do {
                     let subItems = try FileManager.default.contentsOfDirectory(atPath: file.path)
                     var subFiles: [GitFile] = []
                     for item in subItems {
                         let fullPath = (file.path as NSString).appendingPathComponent(item)
-                        var isDir: ObjCBool = false
-                        FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
+                        var isDirectory: ObjCBool = false
+                        FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDirectory)
                         let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath)
                         let size = (attrs?[.size] as? Int64) ?? 0
                         let modDate = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
@@ -256,46 +226,28 @@ class LocalFileManager: ObservableObject {
                         subFiles.append(GitFile(
                             name: item,
                             path: fullPath,
-                            isDirectory: isDir.boolValue,
+                            isDirectory: isDirectory.boolValue,
                             size: size,
                             modificationDate: modDate,
-                            isTextFile: !isDir.boolValue && isText,
-                            isBinaryFile: !isDir.boolValue && isBinary,
+                            isTextFile: !isDirectory.boolValue && isText,
+                            isBinaryFile: !isDirectory.boolValue && isBinary,
                             content: nil
                         ))
                     }
                     result.append(contentsOf: collectAllFiles(from: subFiles, basePath: relativePath))
-                } catch {
-                    // تخطي المجلدات التي لا يمكن قراءتها
-                }
+                } catch {}
             } else {
-                // ✅ تحقق من حجم الملف (الحد الأقصى 100 ميجا)
-                guard file.size < 100_000_000 else {
-                    print("⚠️ تخطي \(relativePath) — حجمه \((Double(file.size) / 1_000_000).rounded()) ميجا")
-                    continue
-                }
-                
+                guard file.size < 100_000_000 else { continue }
                 let url = URL(fileURLWithPath: file.path)
                 
                 if file.isTextFile {
                     if let content = try? String(contentsOf: url, encoding: .utf8) {
-                        result.append(FileToPush(
-                            path: relativePath,
-                            content: content,
-                            isBinary: false,
-                            size: file.size
-                        ))
+                        result.append(FileToPush(path: relativePath, content: content, isBinary: false, size: file.size))
                     }
                 } else {
-                    // ✅ دعم الملفات الثنائية عبر Base64
                     if let data = try? Data(contentsOf: url) {
                         let base64 = data.base64EncodedString()
-                        result.append(FileToPush(
-                            path: relativePath,
-                            content: base64,
-                            isBinary: true,
-                            size: file.size
-                        ))
+                        result.append(FileToPush(path: relativePath, content: base64, isBinary: true, size: file.size))
                     }
                 }
             }
@@ -303,14 +255,9 @@ class LocalFileManager: ObservableObject {
         return result
     }
     
-    // MARK: - جمع الملفات المعدّلة فقط ✅
     func collectModifiedFiles() -> [FileToPush] {
         let allFiles = collectAllFiles(from: rootFiles)
-        
-        if modifiedFiles.isEmpty {
-            return allFiles // أول مرة — ارفع الكل
-        }
-        
+        if modifiedFiles.isEmpty { return allFiles }
         return allFiles.filter { file in
             modifiedFiles.contains { modifiedPath in
                 modifiedPath.hasSuffix(file.path) || file.path.hasSuffix(modifiedPath)
@@ -318,19 +265,14 @@ class LocalFileManager: ObservableObject {
         }
     }
     
-    // MARK: - تحديث حالة التغييرات ✅
     private func updateUncommittedStatus() {
         hasUncommittedChanges = !modifiedFiles.isEmpty
     }
     
-    // MARK: - تصفير التغييرات بعد الرفع ✅
     func clearModifications() {
         modifiedFiles.removeAll()
         hasUncommittedChanges = false
     }
     
-    // MARK: - عدد الملفات المعدّلة ✅
-    var modifiedCount: Int {
-        return modifiedFiles.count
-    }
+    var modifiedCount: Int { modifiedFiles.count }
 }
