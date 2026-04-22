@@ -1,297 +1,336 @@
 import Foundation
-import SwiftUI
-import UniformTypeIdentifiers
+
+// نوع الملف للرفع
+struct FileToPush: Identifiable {
+    let id = UUID()
+    let path: String
+    let content: String
+    let isBinary: Bool
+    let size: Int64
+}
 
 class LocalFileManager: ObservableObject {
+    
+    // MARK: - Published Properties
     @Published var rootFiles: [GitFile] = []
-    @Published var currentPath: URL
-    @Published var selectedFile: GitFile?
-    @Published var fileContent: String = ""
-    @Published var isLoading = false
+    @Published var currentPath: String = ""
     @Published var error: String?
+    @Published var currentFiles: [GitFile] = []
+    @Published var isLoading = false
     
-    private let fm = FileManager.default
+    // ✅ تتبع الملفات المعدّلة
+    @Published var modifiedFiles: Set<String> = []
+    @Published var hasUncommittedChanges: Bool = false
     
-    // Text file extensions we can read/push
+    // ✅ إحصائيات الرفع
+    @Published var uploadProgress: String = ""
+    @Published var uploadedCount: Int = 0
+    @Published var totalToUpload: Int = 0
+    
+    // MARK: - Extensions
     static let textExtensions: Set<String> = [
-        "swift", "m", "h", "mm", "c", "cpp", "cs",
-        "txt", "md", "markdown", "json", "xml", "plist",
-        "yaml", "yml", "sh", "bash", "zsh",
-        "js", "ts", "html", "css", "py", "rb", "go",
-        "gitignore", "gitkeep", "entitlements", "pbxproj",
-        "strings", "stringsdict", "xcconfig", "podspec",
-        "gradle", "kt", "java", "env", "toml", "ini", "cfg"
+        "swift", "m", "h", "mm", "hpp", "cpp", "c", "cs", "java", "kt", "py",
+        "rb", "js", "ts", "jsx", "tsx", "html", "css", "scss", "less", "json",
+        "xml", "yaml", "yml", "toml", "ini", "cfg", "conf", "sh", "bash", "zsh",
+        "fish", "bat", "ps1", "sql", "md", "txt", "rst", "log", "csv", "tsv",
+        "Makefile", "Dockerfile", "gitignore", "gitattributes", "editorconfig",
+        "env", "properties", "gradle", "cmake", "proto", "graphql", "vue",
+        "svelte", "lua", "r", "go", "rs", "dart", "php", "pl", "ex", "exs",
+        "erl", "hs", "ml", "fs", "clj", "scala", "v", "sv", "vhd"
     ]
     
-    static var appDocumentsURL: URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let projects = docs.appendingPathComponent("Projects", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: projects.path) {
-            try? FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
-        }
-        return projects
-    }
+    static let binaryExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg", "webp", "tiff", "tif",
+        "mp3", "mp4", "wav", "avi", "mov", "pdf", "zip", "tar", "gz", "rar",
+        "7z", "dmg", "iso", "app", "exe", "dll", "so", "dylib", "a", "lib",
+        "o", "pyc", "class", "jar", "war", "ear", "framework", "bundle",
+        "xcassets", "nib", "xib", "storyboardc", "ipa", "apk", "aab"
+    ]
     
-    init() {
-        currentPath = LocalFileManager.appDocumentsURL
-        createWelcomeFileIfNeeded()
-        loadFiles(at: currentPath)
-    }
-    
-    private func createWelcomeFileIfNeeded() {
-        let readmePath = currentPath.appendingPathComponent("README.txt")
-        if !fm.fileExists(atPath: readmePath.path) {
-            let content = """
-GitActions Hub - مجلد المشاريع
-================================
-ضع ملفات مشاريعك هنا لتتمكن من:
-- تعديلها من داخل التطبيق
-- رفعها على GitHub عبر Commit & Push
-
-مسار المجلد في Files:
-Files > On My iPhone > GitActionsHub > Projects
-"""
-            try? content.write(to: readmePath, atomically: true, encoding: .utf8)
-        }
-    }
-    
-    func loadFiles(at url: URL) {
-        isLoading = true
-        currentPath = url
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            let files = self.buildFileTree(at: url)
-            DispatchQueue.main.async { self.rootFiles = files; self.isLoading = false }
-        }
-    }
-    
-    private func buildFileTree(at url: URL) -> [GitFile] {
-        guard let contents = try? fm.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+    // MARK: - إنشاء مجلد التطبيق
+    func getAppDirectory() -> String {
+        let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0]
+        let appDir = (docs as NSString).appendingPathComponent("GitActionsHub")
         
-        return contents.compactMap { fileURL in
-            let res = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
-            let isDir = res?.isDirectory ?? false
-            var file = GitFile(
-                name: fileURL.lastPathComponent,
-                path: fileURL.path,
-                isDirectory: isDir,
-                size: Int64(res?.fileSize ?? 0),
-                modifiedDate: res?.contentModificationDate ?? Date()
-            )
-            if isDir { file.children = buildFileTree(at: fileURL) }
-            return file
-        }.sorted { a, b in a.isDirectory != b.isDirectory ? a.isDirectory : a.name < b.name }
+        if !FileManager.default.fileExists(atPath: appDir) {
+            try? FileManager.default.createDirectory(atPath: appDir, withIntermediateDirectories: true)
+        }
+        return appDir
     }
     
-    // Fix: Only collect readable text files, skip binary
-    func collectAllFiles(from files: [GitFile], basePath: String = "") -> [(path: String, content: String)] {
-        var result: [(path: String, content: String)] = []
+    // MARK: - تحميل الملفات
+    func loadFiles(at path: String? = nil) {
+        let basePath = getAppDirectory()
+        let targetPath = path ?? basePath
+        currentPath = targetPath
+        
+        do {
+            let items = try FileManager.default.contentsOfDirectory(atPath: targetPath)
+            var files: [GitFile] = []
+            
+            for item in items {
+                if item.hasPrefix(".") { continue } // إخفاء الملفات المخفية
+                
+                let fullPath = (targetPath as NSString).appendingPathComponent(item)
+                var isDir: ObjCBool = false
+                FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
+                
+                let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath)
+                let size = (attrs?[.size] as? Int64) ?? 0
+                let modDate = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
+                
+                let isDir = isDir.boolValue
+                let ext = (item as NSString).pathExtension.lowercased()
+                let isText = Self.textExtensions.contains(ext) || ext.isEmpty || item.hasPrefix(".")
+                let isBinary = Self.binaryExtensions.contains(ext)
+                
+                files.append(GitFile(
+                    name: item,
+                    path: fullPath,
+                    isDirectory: isDir,
+                    size: size,
+                    modificationDate: modDate,
+                    isTextFile: !isDir && isText,
+                    isBinaryFile: !isDir && isBinary,
+                    content: nil
+                ))
+            }
+            
+            // ترتيب: المجلدات أولاً، ثم أبجدياً
+            files.sort { a, b in
+                if a.isDirectory != b.isDirectory { return a.isDirectory }
+                return a.name.lowercased() < b.name.lowercased()
+            }
+            
+            if path == nil {
+                rootFiles = files
+            }
+            currentFiles = files
+            error = nil
+            
+        } catch {
+            self.error = "تعذّر تحميل الملفات: \(error.localizedDescription)"
+        }
+    }
+    
+    // MARK: - قراءة محتوى ملف
+    func readFileContent(_ file: GitFile) -> String? {
+        let url = URL(fileURLWithPath: file.path)
+        if file.isTextFile {
+            return try? String(contentsOf: url, encoding: .utf8)
+        } else if file.isBinaryFile {
+            if let data = try? Data(contentsOf: url) {
+                return data.base64EncodedString()
+            }
+        }
+        return nil
+    }
+    
+    // MARK: - كتابة ملف (مع تتبع التعديل) ✅
+    func writeFile(_ file: GitFile, content: String) {
+        do {
+            let url = URL(fileURLWithPath: file.path)
+            if file.isBinaryFile, let data = Data(base64Encoded: content) {
+                try data.write(to: url)
+            } else {
+                try content.write(to: url, atomically: true, encoding: .utf8)
+            }
+            modifiedFiles.insert(file.path)
+            updateUncommittedStatus()
+            loadFiles(at: currentPath)
+        } catch {
+            self.error = "تعذّر حفظ الملف: \(error.localizedDescription)"
+        }
+    }
+    
+    // MARK: - إنشاء ملف جديد ✅
+    func createFile(name: String, in directory: String? = nil, content: String = "") {
+        let dir = directory ?? currentPath
+        let fullPath = (dir as NSString).appendingPathComponent(name)
+        
+        let ext = (name as NSString).pathExtension.lowercased()
+        let isBinary = Self.binaryExtensions.contains(ext)
+        
+        do {
+            if isBinary {
+                // إنشاء ملف ثنائي فارغ
+                FileManager.default.createFile(atPath: fullPath, contents: nil)
+            } else {
+                try content.write(toFile: fullPath, atomically: true, encoding: .utf8)
+            }
+            modifiedFiles.insert(fullPath)
+            updateUncommittedStatus()
+            loadFiles(at: dir)
+        } catch {
+            self.error = "تعذّر إنشاء الملف: \(error.localizedDescription)"
+        }
+    }
+    
+    // MARK: - إنشاء مجلد جديد ✅
+    func createDirectory(name: String, in directory: String? = nil) {
+        let dir = directory ?? currentPath
+        let fullPath = (dir as NSString).appendingPathComponent(name)
+        
+        do {
+            try FileManager.default.createDirectory(atPath: fullPath, withIntermediateDirectories: true)
+            loadFiles(at: dir)
+        } catch {
+            self.error = "تعذّر إنشاء المجلد: \(error.localizedDescription)"
+        }
+    }
+    
+    // MARK: - حذف ملف أو مجلد ✅
+    func deleteItem(_ file: GitFile) {
+        do {
+            try FileManager.default.removeItem(atPath: file.path)
+            modifiedFiles.remove(file.path)
+            updateUncommittedStatus()
+            loadFiles(at: currentPath)
+        } catch {
+            self.error = "تعذّر حذف \(file.name): \(error.localizedDescription)"
+        }
+    }
+    
+    // MARK: - إعادة تسمية ✅
+    func renameItem(_ file: GitFile, newName: String) {
+        let newFullPath = (currentPath as NSString).appendingPathComponent(newName)
+        do {
+            try FileManager.default.moveItem(atPath: file.path, toPath: newFullPath)
+            modifiedFiles.remove(file.path)
+            modifiedFiles.insert(newFullPath)
+            updateUncommittedStatus()
+            loadFiles(at: currentPath)
+        } catch {
+            self.error = "تعذّر إعادة التسمية: \(error.localizedDescription)"
+        }
+    }
+    
+    // MARK: - استيراد من تطبيق الملفات ✅
+    func importFile(from url: URL, to directory: String? = nil) {
+        let dir = directory ?? currentPath
+        let fileName = url.lastPathComponent
+        let destPath = (dir as NSString).appendingPathComponent(fileName)
+        
+        guard url.startAccessingSecurityScopedResource() else {
+            self.error = "تعذّر الوصول للملف"
+            return
+        }
+        defer { url.stopAccessingSecurityScopedResource() }
+        
+        do {
+            if FileManager.default.fileExists(atPath: destPath) {
+                try FileManager.default.removeItem(atPath: destPath)
+            }
+            try FileManager.default.copyItem(atPath: url.path, toPath: destPath)
+            modifiedFiles.insert(destPath)
+            updateUncommittedStatus()
+            loadFiles(at: dir)
+        } catch {
+            self.error = "تعذّر استيراد الملف: \(error.localizedDescription)"
+        }
+    }
+    
+    // MARK: - جمع الملفات للرفع ✅ (مع دعم الثنائية)
+    func collectAllFiles(from files: [GitFile], basePath: String = "") -> [FileToPush] {
+        var result: [FileToPush] = []
+        
         for file in files {
             let relativePath = basePath.isEmpty ? file.name : "\(basePath)/\(file.name)"
+            
             if file.isDirectory {
-                let children: [GitFile]
-                if let loaded = file.children, !loaded.isEmpty {
-                    children = loaded
-                } else {
-                    children = buildFileTree(at: URL(fileURLWithPath: file.path))
+                let subPath = (file.path as NSString)
+                do {
+                    let subItems = try FileManager.default.contentsOfDirectory(atPath: file.path)
+                    var subFiles: [GitFile] = []
+                    for item in subItems {
+                        let fullPath = (file.path as NSString).appendingPathComponent(item)
+                        var isDir: ObjCBool = false
+                        FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
+                        let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath)
+                        let size = (attrs?[.size] as? Int64) ?? 0
+                        let modDate = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
+                        let ext = (item as NSString).pathExtension.lowercased()
+                        let isText = Self.textExtensions.contains(ext) || ext.isEmpty
+                        let isBinary = Self.binaryExtensions.contains(ext)
+                        
+                        subFiles.append(GitFile(
+                            name: item,
+                            path: fullPath,
+                            isDirectory: isDir.boolValue,
+                            size: size,
+                            modificationDate: modDate,
+                            isTextFile: !isDir.boolValue && isText,
+                            isBinaryFile: !isDir.boolValue && isBinary,
+                            content: nil
+                        ))
+                    }
+                    result.append(contentsOf: collectAllFiles(from: subFiles, basePath: relativePath))
+                } catch {
+                    // تخطي المجلدات التي لا يمكن قراءتها
                 }
-                let subFiles = collectAllFiles(from: children, basePath: relativePath)
-                result.append(contentsOf: subFiles)
             } else {
-                // Fix: Check extension before reading
-                let ext = (file.name as NSString).pathExtension.lowercased()
-                let noExt = ext.isEmpty // files without extension like .gitkeep, .gitignore
-                
-                let isTextFile = LocalFileManager.textExtensions.contains(ext) || noExt || file.name.hasPrefix(".")
-                
-                guard isTextFile else { continue } // Skip binary files (png, ipa, etc.)
-                
-                // Fix: Guard against large files (>2MB)
-                guard file.size < 2_000_000 else { continue }
+                // ✅ تحقق من حجم الملف (الحد الأقصى 100 ميجا)
+                guard file.size < 100_000_000 else {
+                    print("⚠️ تخطي \(relativePath) — حجمه \((Double(file.size) / 1_000_000).rounded()) ميجا")
+                    continue
+                }
                 
                 let url = URL(fileURLWithPath: file.path)
-                if let content = try? String(contentsOf: url, encoding: .utf8) {
-                    result.append((path: relativePath, content: content))
-                } else if let content = try? String(contentsOf: url, encoding: .isoLatin1) {
-                    result.append((path: relativePath, content: content))
+                
+                if file.isTextFile {
+                    if let content = try? String(contentsOf: url, encoding: .utf8) {
+                        result.append(FileToPush(
+                            path: relativePath,
+                            content: content,
+                            isBinary: false,
+                            size: file.size
+                        ))
+                    }
+                } else {
+                    // ✅ دعم الملفات الثنائية عبر Base64
+                    if let data = try? Data(contentsOf: url) {
+                        let base64 = data.base64EncodedString()
+                        result.append(FileToPush(
+                            path: relativePath,
+                            content: base64,
+                            isBinary: true,
+                            size: file.size
+                        ))
+                    }
                 }
-                // Silently skip unreadable files
             }
         }
         return result
     }
     
-    func isTextFile(_ file: GitFile) -> Bool {
-        let ext = (file.name as NSString).pathExtension.lowercased()
-        return LocalFileManager.textExtensions.contains(ext) || ext.isEmpty
-    }
-    
-    func readFile(_ file: GitFile) {
-        guard !file.isDirectory else { return }
-        let url = URL(fileURLWithPath: file.path)
-        if let content = try? String(contentsOf: url, encoding: .utf8) {
-            DispatchQueue.main.async { self.fileContent = content; self.selectedFile = file }
-        } else if let content = try? String(contentsOf: url, encoding: .isoLatin1) {
-            DispatchQueue.main.async { self.fileContent = content; self.selectedFile = file }
-        } else {
-            DispatchQueue.main.async {
-                self.error = "لا يمكن فتح ملفات ثنائية (binary)"
-            }
-        }
-    }
-    
-    func writeFile(_ file: GitFile, content: String) {
-        let url = URL(fileURLWithPath: file.path)
-        do {
-            try content.write(to: url, atomically: true, encoding: .utf8)
-            loadFiles(at: currentPath)
-        } catch { self.error = "تعذّر حفظ الملف: \(error.localizedDescription)" }
-    }
-    
-    func createFile(name: String, at parentPath: String, isDirectory: Bool = false) {
-        let url = URL(fileURLWithPath: "\(parentPath)/\(name)")
-        do {
-            if isDirectory {
-                try fm.createDirectory(at: url, withIntermediateDirectories: true)
-                let gitkeep = url.appendingPathComponent(".gitkeep")
-                fm.createFile(atPath: gitkeep.path, contents: Data())
-            } else {
-                fm.createFile(atPath: url.path, contents: Data())
-            }
-            loadFiles(at: currentPath)
-        } catch { self.error = "تعذّر الإنشاء: \(error.localizedDescription)" }
-    }
-    
-    func deleteFile(_ file: GitFile) {
-        do {
-            try fm.removeItem(at: URL(fileURLWithPath: file.path))
-            loadFiles(at: currentPath)
-        } catch { self.error = "تعذّر الحذف: \(error.localizedDescription)" }
-    }
-    
-    func renameFile(_ file: GitFile, newName: String) {
-        let oldURL = URL(fileURLWithPath: file.path)
-        let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(newName)
-        do {
-            try fm.moveItem(at: oldURL, to: newURL)
-            loadFiles(at: currentPath)
-        } catch { self.error = "تعذّر إعادة التسمية: \(error.localizedDescription)" }
-    }
-    
-    func moveFile(_ file: GitFile, direction: MoveDirection) {
-        guard let index = rootFiles.firstIndex(where: { $0.id == file.id }) else { return }
-        let newIndex = direction == .up ? index - 1 : index + 1
-        guard newIndex >= 0 && newIndex < rootFiles.count else { return }
-        rootFiles.swapAt(index, newIndex)
-    }
-    
-    func importFromFiles(url: URL) {
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        let destURL = currentPath.appendingPathComponent(url.lastPathComponent)
-        do {
-            if fm.fileExists(atPath: destURL.path) { try fm.removeItem(at: destURL) }
-            try fm.copyItem(at: url, to: destURL)
-            loadFiles(at: currentPath)
-        } catch { self.error = "تعذّر الاستيراد: \(error.localizedDescription)" }
-    }
-    
-    func navigateUp() {
-        let parent = currentPath.deletingLastPathComponent()
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
-        if currentPath.path != docs.path { loadFiles(at: parent) }
-    }
-    
-    var isAtRoot: Bool { currentPath == LocalFileManager.appDocumentsURL }
-    
-    var currentPathDisplay: String {
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!.path
-        return currentPath.path.replacingOccurrences(of: docs, with: "📱 iPhone")
-    }
-}
-
-enum MoveDirection { case up, down }
-
-// MARK: - Git Operations Manager
-
-class GitOperationsManager: ObservableObject {
-    @Published var commitHistory: [CommitInfo] = []
-    @Published var isLoading = false
-    @Published var lastCommitResult: String?
-    
-    private let gitHubService: GitHubService
-    init(gitHubService: GitHubService) { self.gitHubService = gitHubService }
-    
-    func commitAndPush(owner: String, repo: String, branch: String, message: String, files: [(path: String, content: String)]) async -> Bool {
-        await MainActor.run { isLoading = true }
+    // MARK: - جمع الملفات المعدّلة فقط ✅
+    func collectModifiedFiles() -> [FileToPush] {
+        let allFiles = collectAllFiles(from: rootFiles)
         
-        guard !files.isEmpty else {
-            await MainActor.run { self.lastCommitResult = "❌ لا توجد ملفات نصية للرفع"; self.isLoading = false }
-            return false
+        if modifiedFiles.isEmpty {
+            return allFiles // أول مرة — ارفع الكل
         }
         
-        do {
-            guard let token = UserDefaults.standard.string(forKey: "gh_access_token"),
-                  let baseURL = URL(string: "https://api.github.com") else { return false }
-            
-            func makeReq(_ path: String, method: String = "GET", body: Data? = nil) -> URLRequest {
-                var req = URLRequest(url: baseURL.appendingPathComponent(path))
-                req.httpMethod = method
-                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                req.httpBody = body
-                return req
+        return allFiles.filter { file in
+            modifiedFiles.contains { modifiedPath in
+                modifiedPath.hasSuffix(file.path) || file.path.hasSuffix(modifiedPath)
             }
-            
-            // 1. Get SHA
-            struct RefResp: Codable { struct Obj: Codable { let sha: String }; let object: Obj }
-            let (refData, _) = try await URLSession.shared.data(for: makeReq("/repos/\(owner)/\(repo)/git/refs/heads/\(branch)"))
-            let currentSHA = try JSONDecoder().decode(RefResp.self, from: refData).object.sha
-            
-            // 2. Create blobs
-            struct BlobResp: Codable { let sha: String }
-            var treeItems: [[String: String]] = []
-            for file in files {
-                let bodyData = try JSONEncoder().encode(["content": file.content, "encoding": "utf-8"])
-                var req = makeReq("/repos/\(owner)/\(repo)/git/blobs", method: "POST", body: bodyData)
-                let (blobData, _) = try await URLSession.shared.data(for: req)
-                let blobSHA = try JSONDecoder().decode(BlobResp.self, from: blobData).sha
-                treeItems.append(["path": file.path, "mode": "100644", "type": "blob", "sha": blobSHA])
-            }
-            
-            // 3. Create tree
-            struct TreeResp: Codable { let sha: String }
-            let treeBody = try JSONSerialization.data(withJSONObject: ["base_tree": currentSHA, "tree": treeItems])
-            let (treeData, _) = try await URLSession.shared.data(for: makeReq("/repos/\(owner)/\(repo)/git/trees", method: "POST", body: treeBody))
-            let treeSHA = try JSONDecoder().decode(TreeResp.self, from: treeData).sha
-            
-            // 4. Create commit
-            struct CommitResp: Codable { let sha: String }
-            let commitBody = try JSONSerialization.data(withJSONObject: ["message": message, "tree": treeSHA, "parents": [currentSHA]])
-            let (commitData, _) = try await URLSession.shared.data(for: makeReq("/repos/\(owner)/\(repo)/git/commits", method: "POST", body: commitBody))
-            let commitSHA = try JSONDecoder().decode(CommitResp.self, from: commitData).sha
-            
-            // 5. Update ref
-            let updateBody = try JSONSerialization.data(withJSONObject: ["sha": commitSHA, "force": false])
-            let _ = try await URLSession.shared.data(for: makeReq("/repos/\(owner)/\(repo)/git/refs/heads/\(branch)", method: "PATCH", body: updateBody))
-            
-            await MainActor.run {
-                self.commitHistory.insert(
-                    CommitInfo(message: message, files: files.map { $0.path }, branch: branch, timestamp: Date(), sha: String(commitSHA.prefix(7))),
-                    at: 0
-                )
-                self.lastCommitResult = "✅ تم Push بنجاح!\nSHA: \(String(commitSHA.prefix(7))) · \(files.count) ملف"
-                self.isLoading = false
-            }
-            return true
-        } catch {
-            await MainActor.run { self.lastCommitResult = "❌ فشل: \(error.localizedDescription)"; self.isLoading = false }
-            return false
         }
+    }
+    
+    // MARK: - تحديث حالة التغييرات ✅
+    private func updateUncommittedStatus() {
+        hasUncommittedChanges = !modifiedFiles.isEmpty
+    }
+    
+    // MARK: - تصفير التغييرات بعد الرفع ✅
+    func clearModifications() {
+        modifiedFiles.removeAll()
+        hasUncommittedChanges = false
+    }
+    
+    // MARK: - عدد الملفات المعدّلة ✅
+    var modifiedCount: Int {
+        return modifiedFiles.count
     }
 }
