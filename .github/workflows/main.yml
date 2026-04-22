@@ -7,46 +7,85 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-    
-    - name: Select Xcode
-      run: sudo xcode-select -s /Applications/Xcode_15.2.app
-    
-    - name: Show Xcode version
-      run: xcodebuild -version
-    
-    - name: Build Archive (No Sign)
-      run: |
-        xcodebuild archive \
-          -project GitActionsHub.xcodeproj \
-          -scheme GitActionsHub \
-          -configuration Release \
-          -destination "generic/platform=iOS" \
-          -archivePath build/GitActionsHub.xcarchive \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO \
-          AD_HOC_CODE_SIGNING_ALLOWED=YES \
-          COMPILER_INDEX_STORE_ENABLE=NO \
-          | xcpretty
-    
-    - name: Export IPA (Unsigned)
-      run: |
-        mkdir -p build/ipa
-        cp -r build/GitActionsHub.xcarchive/Products/Applications/GitActionsHub.app build/ipa/
-        cd build/ipa
-        mkdir Payload
-        cp -r GitActionsHub.app Payload/
-        zip -r GitActionsHub.ipa Payload
-        rm -rf Payload GitActionsHub.app
-    
-    - name: Upload IPA Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: GitActionsHub-IPA
-        path: build/ipa/GitActionsHub.ipa
-        retention-days: 30
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      # ✅ لا حاجة لـ xcode-select — نستخدم الإصدار الافتراضي
+      - name: Show Xcode version
+        run: xcodebuild -version
+      
+      - name: List available schemes
+        run: |
+          xcodebuild -project GitActionsHub.xcodeproj -list
+          echo "---"
+          ls -la build/ 2>/dev/null || echo "build/ doesn't exist yet"
+      
+      # ✅ إزالة xcpretty لأنه يخفي الأخطاء الفعلية
+      - name: Build Archive (No Sign)
+        run: |
+          xcodebuild archive \
+            -project GitActionsHub.xcodeproj \
+            -scheme GitActionsHub \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/GitActionsHub.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            GCC_WARN_INHIBIT_ALL_WARNINGS=YES \
+            2>&1 | tee build_log.txt
+          
+          # ✅ التحقق من أن الأرشيف تم إنشاؤه بالفعل
+          if [ ! -d "build/GitActionsHub.xcarchive" ]; then
+            echo "❌ ARCHIVE FAILED — Showing last 100 lines of build log:"
+            tail -100 build_log.txt
+            exit 1
+          fi
+          
+          echo "✅ Archive created successfully"
+          ls -la build/GitActionsHub.xcarchive/Products/Applications/
+      
+      - name: Export IPA (Unsigned)
+        run: |
+          # ✅ التحقق من وجود .app قبل النسخ
+          APP_PATH="build/GitActionsHub.xcarchive/Products/Applications/GitActionsHub.app"
+          
+          if [ ! -d "$APP_PATH" ]; then
+            echo "❌ App bundle not found at expected path!"
+            echo "Contents of xcarchive:"
+            find build/GitActionsHub.xcarchive -type d -name "*.app" 2>/dev/null || echo "No .app found"
+            echo "Full xcarchive structure:"
+            find build/GitActionsHub.xcarchive -maxdepth 4 -type d 2>/dev/null
+            exit 1
+          fi
+          
+          mkdir -p build/ipa
+          cp -r "$APP_PATH" build/ipa/
+          cd build/ipa
+          mkdir Payload
+          cp -r GitActionsHub.app Payload/
+          zip -r GitActionsHub.ipa Payload
+          rm -rf Payload GitActionsHub.app
+          
+          echo "✅ IPA created: $(ls -lh GitActionsHub.ipa)"
+      
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitActionsHub-IPA
+          path: build/ipa/GitActionsHub.ipa
+          retention-days: 30
+      
+      # ✅ رفع سجل البناء في حالة الفشل
+      - name: Upload Build Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build_log.txt
+          retention-days: 7
