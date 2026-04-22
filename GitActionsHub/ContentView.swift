@@ -1,65 +1,40 @@
 import SwiftUI
 
-// MARK: - Content View (Main)
-
 struct ContentView: View {
-    @EnvironmentObject var gitHubService: GitHubService
-    @State private var selectedTab: AppTab = .actions
-    
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            // Main content
-            Group {
-                switch selectedTab {
-                case .actions:
-                    ActionsView()
-                case .repos:
-                    ReposView()
-                case .files:
-                    FilesView()
-                case .profile:
-                    ProfileView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            
-            // Custom Tab Bar
-            CustomTabBar(selectedTab: $selectedTab)
-        }
-        .preferredColorScheme(.dark)
-        .ignoresSafeArea(.keyboard)
-    }
-}
-
-// MARK: - Root View
-
-struct RootView: View {
     @StateObject private var gitHubService = GitHubService()
+    @State private var selectedTab = 0
     
     var body: some View {
-        Group {
-            if gitHubService.isAuthenticated {
-                ContentView()
-                    .environmentObject(gitHubService)
-            } else {
-                LoginView()
-                    .environmentObject(gitHubService)
-            }
+        TabView(selection: $selectedTab) {
+            ActionsView()
+                .environmentObject(gitHubService)
+                .tabItem {
+                    Label("الأكشنز", systemImage: "bolt.fill")
+                }
+                .tag(0)
+            
+            ReposView()
+                .environmentObject(gitHubService)
+                .tabItem {
+                    Label("المستودعات", systemImage: "repo")
+                }
+                .tag(1)
+            
+            FilesView()
+                .tabItem {
+                    Label("الملفات", systemImage: "folder.fill")
+                }
+                .tag(2)
+            
+            ProfileView()
+                .environmentObject(gitHubService)
+                .tabItem {
+                    Label("الملف", systemImage: "person.fill")
+                }
+                .tag(3)
         }
-        .animation(.easeInOut(duration: 0.4), value: gitHubService.isAuthenticated)
         .onAppear {
             gitHubService.loadSavedToken()
-        }
-    }
-}
-
-// MARK: - App Entry Point
-
-@main
-struct GitActionsHubApp: App {
-    var body: some Scene {
-        WindowGroup {
-            RootView()
         }
     }
 }
