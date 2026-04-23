@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var gitHubService: GitHubService
-    @State private var selectedTab: AppTab = .actions
+    @State private var selectedTab: AppTab = .repos
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -10,7 +10,6 @@ struct ContentView: View {
                 switch selectedTab {
                 case .actions: ActionsView()
                 case .repos:   ReposView()
-                case .files:   FilesView()
                 case .profile: ProfileView()
                 }
             }
@@ -19,7 +18,6 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .ignoresSafeArea(.keyboard)
-        // Force LTR for entire app — prevents Arabic system locale from flipping UI
         .environment(\.layoutDirection, .leftToRight)
     }
 }

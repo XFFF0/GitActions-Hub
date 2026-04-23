@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ReposView: View {
     @EnvironmentObject var gitHubService: GitHubService
+    @StateObject private var fileManager = LocalFileManager()
     @State private var searchText = ""
     @State private var selectedRepo: GitHubRepo?
     @State private var showRepoDetail = false
@@ -13,7 +14,14 @@ struct ReposView: View {
     @State private var newRepoName = ""
     @State private var selectedRepoForMenu: GitHubRepo?
     @State private var showContextMenu = false
-
+    @State private var showFileEditor = false
+    @State private var mode: ViewMode = .repos
+    
+    enum ViewMode {
+        case repos
+        case files
+    }
+    
     enum SortOption: String, CaseIterable {
         case updated = "Updated"
         case name    = "Name"
@@ -34,82 +42,18 @@ struct ReposView: View {
         default:     return repos
         }
     }
-
+    
     var body: some View {
         NavigationStack {
             ZStack {
                 AnimatedGradientBackground()
                 VStack(spacing: 0) {
-                    // Header
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Repos")
-                                .font(.system(size: 28, weight: .black))
-                                .foregroundColor(AppColors.text)
-                            if let user = gitHubService.currentUser {
-                                Text("@\(user.login)")
-                                    .font(.system(size: 13, design: .monospaced))
-                                    .foregroundColor(AppColors.textSecondary)
-                            }
-                        }
-                        Spacer()
-                        Button { Task { await gitHubService.fetchRepositories() } } label: {
-                            Image(systemName: "arrow.clockwise.circle.fill")
-                                .font(.system(size: 22)).foregroundColor(AppColors.textSecondary)
-                        }
-                        Button { selectedRepoForMenu = nil; showContextMenu = true } label: {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.system(size: 22)).foregroundColor(AppColors.accent)
-                        }
-                    }
-                    .padding(.horizontal).padding(.top, 8).padding(.bottom, 12)
-
-                    // Search + sort
-                    VStack(spacing: 10) {
-                        HStack {
-                            Image(systemName: "magnifyingglass").foregroundColor(AppColors.textSecondary)
-                            TextField("Search repositories...", text: $searchText)
-                                .foregroundColor(AppColors.text).autocorrectionDisabled()
-                        }
-                        .padding(12).background(AppColors.surfaceElevated)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12)
-                            .strokeBorder(searchText.isEmpty ? AppColors.border : AppColors.accent.opacity(0.5), lineWidth: 1))
-
-                        HStack {
-                            Text("\(filteredRepos.count) repos")
-                                .font(.system(size: 12)).foregroundColor(AppColors.textSecondary)
-                            Spacer()
-                            Picker("Sort", selection: $sortOption) {
-                                ForEach(SortOption.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                            }
-                            .pickerStyle(.segmented).frame(width: 210)
-                        }
-                    }
-                    .padding(.horizontal).padding(.bottom, 8)
-
-                    if gitHubService.isLoading {
-                        LoadingCard(); Spacer()
+                    if mode == .repos {
+                        reposHeader
+                        reposList
                     } else {
-                        ScrollView {
-                            LazyVStack(spacing: 10) {
-                                ForEach(filteredRepos) { repo in
-                                    RepoCard(repo: repo) {
-                                        selectedRepo = repo; showRepoDetail = true
-                                    }
-                                    .padding(.horizontal)
-                                    .simultaneousGesture(
-                                        LongPressGesture(minimumDuration: 0.5)
-                                            .onEnded { _ in
-                                                selectedRepoForMenu = repo
-                                                showContextMenu = true
-                                            }
-                                    )
-                                }
-                            }
-                            .padding(.vertical)
-                        }
-                        .refreshable { await gitHubService.fetchRepositories() }
+                        filesHeader
+                        filesList
                     }
                 }
             }
@@ -126,10 +70,21 @@ struct ReposView: View {
                 repoToRename = repo
                 newRepoName = repo.name
                 showRenameDialog = true
+            }, onImport: { repo in
+                importRepoToFiles(repo: repo)
+            }, onOpenFiles: {
+                mode = .files
             }, onDismiss: {
                 selectedRepoForMenu = nil
             })
             .environmentObject(gitHubService)
+        }
+        .sheet(isPresented: $showFileEditor) {
+            if let f = fileManager.selectedFile { 
+                FileEditorView(file: f, content: fileManager.fileContent) { newContent in
+                    fileManager.writeFile(f, content: newContent)
+                }
+            }
         }
         .alert("Delete Repository", isPresented: $showDeleteAlert) {
             Button("Delete", role: .destructive) {
@@ -149,6 +104,208 @@ struct ReposView: View {
         .onAppear {
             if gitHubService.repositories.isEmpty { Task { await gitHubService.fetchRepositories() } }
         }
+    }
+    
+    // MARK: - Repos View
+    
+    private var reposHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Repos")
+                    .font(.system(size: 28, weight: .black))
+                    .foregroundColor(AppColors.text)
+                if let user = gitHubService.currentUser {
+                    Text("@\(user.login)")
+                        .font(.system(size: 13, design: .monospaced))
+                        .foregroundColor(AppColors.textSecondary)
+                }
+            }
+            Spacer()
+            Button { Task { await gitHubService.fetchRepositories() } } label: {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.system(size: 22)).foregroundColor(AppColors.textSecondary)
+            }
+            Button { selectedRepoForMenu = nil; showContextMenu = true } label: {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 22)).foregroundColor(AppColors.accent)
+            }
+        }
+        .padding(.horizontal).padding(.top, 8).padding(.bottom, 12)
+    }
+    
+    private var reposList: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundColor(AppColors.textSecondary)
+                TextField("Search repositories...", text: $searchText)
+                    .foregroundColor(AppColors.text).autocorrectionDisabled()
+            }
+            .padding(12).background(AppColors.surfaceElevated)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(searchText.isEmpty ? AppColors.border : AppColors.accent.opacity(0.5), lineWidth: 1))
+
+            HStack {
+                Text("\(filteredRepos.count) repos")
+                    .font(.system(size: 12)).foregroundColor(AppColors.textSecondary)
+                Spacer()
+                Picker("Sort", selection: $sortOption) {
+                    ForEach(SortOption.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented).frame(width: 210)
+            }
+        }
+        .padding(.horizontal).padding(.bottom, 8)
+        
+        if gitHubService.isLoading {
+            LoadingCard(); Spacer()
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(filteredRepos) { repo in
+                        RepoCard(repo: repo) {
+                            selectedRepo = repo; showRepoDetail = true
+                        }
+                        .padding(.horizontal)
+                        .simultaneousGesture(
+                            LongPressGesture(minimumDuration: 0.5)
+                                .onEnded { _ in
+                                    selectedRepoForMenu = repo
+                                    showContextMenu = true
+                                }
+                        )
+                    }
+                }
+                .padding(.vertical)
+            }
+            .refreshable { await gitHubService.fetchRepositories() }
+        }
+    }
+    
+    private var bottomBar: some View {
+        HStack(spacing: 16) {
+            if selectedRepoForMenu != nil {
+                Text("Imported: \(fileManager.rootFiles.count) files")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color(hex: "#6BCB77"))
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Color(hex: "#6BCB77").opacity(0.15))
+                    .clipShape(Capsule())
+            }
+            Spacer()
+            Button { openImportedFiles() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder.fill")
+                    Text("Open Files")
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .background(Color(hex: "#FFD93D"))
+                .clipShape(Capsule())
+            }
+        }
+        .padding(.horizontal).padding(.vertical, 12)
+        .background(AppColors.surface.opacity(0.9))
+    }
+    
+    // MARK: - Files View
+    
+    private var filesHeader: some View {
+        HStack {
+            Button { mode = .repos } label: {
+                Image(systemName: "chevron.left.circle.fill")
+                    .font(.system(size: 22)).foregroundColor(AppColors.textSecondary)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Files")
+                    .font(.system(size: 28, weight: .black))
+                    .foregroundColor(AppColors.text)
+                Text(fileManager.currentPathDisplay)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(AppColors.textSecondary)
+            }
+            Spacer()
+            Button { selectedRepoForMenu = nil; showContextMenu = true } label: {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 22)).foregroundColor(AppColors.accent)
+            }
+}
+        .padding(.horizontal).padding(.bottom, 8)
+    
+    private var filesList: some View {
+        VStack(spacing: 0) {
+            if fileManager.isLoading {
+                LoadingCard()
+            } else if fileManager.rootFiles.isEmpty {
+                EmptyStateView(icon: "folder.badge.plus", title: "Empty folder", subtitle: "Long press a repo > Import to Files")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(Array(fileManager.rootFiles.enumerated()), id: \.element.id) { i, file in
+                            FileRowView(
+                                file: file, depth: 0, isEditMode: false,
+                                canMoveUp: i > 0, canMoveDown: i < fileManager.rootFiles.count - 1,
+                                onTap: { handleFileTap($0) },
+                                onDelete: { fileToDelete = $0 },
+                                onRename: { fileToRename = $0 },
+                                onMoveUp: { },
+                                onMoveDown: { }
+                            )
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+        }
+    }
+    
+    @State private var fileToDelete: GitFile?
+    @State private var fileToRename: GitFile?
+    @State private var showDeleteFileAlert = false
+    @State private var showRenameFileDialog = false
+    @State private var newFileName = ""
+    
+    private func handleFileTap(_ file: GitFile) {
+        if file.isDirectory { 
+            fileManager.loadFiles(at: URL(fileURLWithPath: file.path)) 
+        } else { 
+            fileManager.readFile(file)
+            showFileEditor = true
+        }
+    }
+    
+    private func importRepoToFiles(repo: GitHubRepo) {
+        guard let user = gitHubService.currentUser else { return }
+        
+        Task {
+            do {
+                let files = try await gitHubService.fetchRepoTree(owner: user.login, repo: repo.name, branch: repo.defaultBranch)
+                let repoFolder = LocalFileManager.appDocumentsURL.appendingPathComponent(repo.name, isDirectory: true)
+                try? FileManager.default.createDirectory(at: repoFolder, withIntermediateDirectories: true)
+                
+                for file in files {
+                    let filePath = repoFolder.appendingPathComponent(file.path)
+                    try? FileManager.default.createDirectory(at: filePath.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try? file.content.write(to: filePath, atomically: true, encoding: .utf8)
+                }
+                
+                await MainActor.run {
+                    fileManager.loadFiles(at: LocalFileManager.appDocumentsURL)
+                    selectedRepoForMenu = repo
+                    mode = .files
+                }
+            } catch {
+                await MainActor.run {
+                    gitHubService.error = error.localizedDescription
+                }
+            }
+        }
+    }
+    
+    private func openImportedFiles() {
+        mode = .files
     }
 }
 
@@ -411,13 +568,12 @@ struct ProfileView: View {
 
 struct ContextMenuSheet: View {
     @EnvironmentObject var gitHubService: GitHubService
-    @StateObject private var fileManager = LocalFileManager()
     let repo: GitHubRepo?
     let onDelete: (GitHubRepo) -> Void
     let onRename: (GitHubRepo) -> Void
+    let onImport: (GitHubRepo) -> Void
+    let onOpenFiles: () -> Void
     let onDismiss: () -> Void
-    @State private var isImporting = false
-    @State private var importProgress = ""
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
@@ -441,86 +597,48 @@ struct ContextMenuSheet: View {
                 .padding()
                 Divider().background(AppColors.border)
                 
-                if isImporting {
-                    VStack(spacing: 16) {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle(tint: AppColors.accent))
-                            .scaleEffect(1.5)
-                        Text(importProgress)
-                            .font(.system(size: 14))
-                            .foregroundColor(AppColors.textSecondary)
-                    }
-                    .padding(40)
-                } else {
-                    VStack(spacing: 12) {
-                        if let repo = repo {
-                            menuButton(icon: "arrow.down.circle.fill", color: Color(hex: "#6BCB77"), label: "Import to Files") {
-                                importRepoFiles(repo: repo)
+                VStack(spacing: 12) {
+                    if let repo = repo {
+                        menuButton(icon: "arrow.down.circle.fill", color: Color(hex: "#6BCB77"), label: "Import to Files") {
+                            onImport(repo)
+                            dismiss()
+                        }
+                        
+                        menuButton(icon: "folder.fill", color: Color(hex: "#FFD93D"), label: "Open Imported Files") {
+                            onOpenFiles()
+                            dismiss()
+                        }
+                        
+                        menuButton(icon: "safari.fill", color: AppColors.accent, label: "Open in Browser") {
+                            if let url = URL(string: repo.htmlUrl) {
+                                UIApplication.shared.open(url)
                             }
-                            
-                            menuButton(icon: "pencil.circle.fill", color: AppColors.accent, label: "Open in Browser") {
-                                if let url = URL(string: repo.htmlUrl) {
-                                    UIApplication.shared.open(url)
-                                }
-                                dismiss()
-                            }
-                            
-                            menuButton(icon: "trash.circle.fill", color: Color(hex: "#FF6B6B"), label: "Delete") {
-                                onDelete(repo)
-                                dismiss()
-                            }
-                        } else {
-                            menuButton(icon: "plus.circle.fill", color: AppColors.accent, label: "Create New Repository") {
-                                // TODO: Create new repo
-                            }
-                            
-                            menuButton(icon: "link.circle.fill", color: Color(hex: "#6BCB77"), label: "Clone from URL") {
-                                // TODO: Clone from URL
-                            }
+                            dismiss()
+                        }
+                        
+                        menuButton(icon: "pencil.circle.fill", color: Color(hex: "#C77DFF"), label: "Rename") {
+                            onRename(repo)
+                            dismiss()
+                        }
+                        
+                        menuButton(icon: "trash.circle.fill", color: Color(hex: "#FF6B6B"), label: "Delete") {
+                            onDelete(repo)
+                            dismiss()
+                        }
+                    } else {
+                        menuButton(icon: "plus.circle.fill", color: AppColors.accent, label: "Create New Repository") {
+                            // TODO: Create new repo
+                        }
+                        
+                        menuButton(icon: "link.circle.fill", color: Color(hex: "#6BCB77"), label: "Clone from URL") {
+                            // TODO: Clone from URL
                         }
                     }
-                    .padding()
                 }
+                .padding()
             }
         }
         .preferredColorScheme(.dark)
-    }
-    
-    private func importRepoFiles(repo: GitHubRepo) {
-        guard let user = gitHubService.currentUser else { return }
-        isImporting = true
-        importProgress = "Fetching files from GitHub..."
-        
-        Task {
-            do {
-                let files = try await gitHubService.fetchRepoTree(owner: user.login, repo: repo.name, branch: repo.defaultBranch)
-                
-                await MainActor.run {
-                    importProgress = "Saving \(files.count) files..."
-                }
-                
-                let repoFolder = LocalFileManager.appDocumentsURL.appendingPathComponent(repo.name, isDirectory: true)
-                try? FileManager.default.createDirectory(at: repoFolder, withIntermediateDirectories: true)
-                
-                for file in files {
-                    let filePath = repoFolder.appendingPathComponent(file.path)
-                    try? FileManager.default.createDirectory(at: filePath.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try? file.content.write(to: filePath, atomically: true, encoding: .utf8)
-                }
-                
-                await MainActor.run {
-                    isImporting = false
-                    importProgress = ""
-                    fileManager.loadFiles(at: LocalFileManager.appDocumentsURL)
-                    dismiss()
-                }
-            } catch {
-                await MainActor.run {
-                    isImporting = false
-                    importProgress = "Error: \(error.localizedDescription)"
-                }
-            }
-        }
     }
     
     func menuButton(icon: String, color: Color, label: String, action: @escaping () -> Void) -> some View {

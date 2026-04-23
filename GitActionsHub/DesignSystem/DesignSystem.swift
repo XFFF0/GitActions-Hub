@@ -174,14 +174,12 @@ struct AnimatedGradientBackground: View {
 enum AppTab: Int, CaseIterable {
     case actions
     case repos
-    case files
     case profile
     
     var title: String {
         switch self {
         case .actions: return "Actions"
         case .repos: return "Repos"
-        case .files: return "Files"
         case .profile: return "Profile"
         }
     }
@@ -190,7 +188,6 @@ enum AppTab: Int, CaseIterable {
         switch self {
         case .actions: return "bolt.circle.fill"
         case .repos: return "square.stack.3d.up.fill"
-        case .files: return "folder.fill"
         case .profile: return "person.circle.fill"
         }
     }
@@ -199,7 +196,6 @@ enum AppTab: Int, CaseIterable {
         switch self {
         case .actions: return Color(hex: "#6C63FF")
         case .repos: return Color(hex: "#FF6B6B")
-        case .files: return Color(hex: "#FFD93D")
         case .profile: return Color(hex: "#6BCB77")
         }
     }
