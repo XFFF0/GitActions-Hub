@@ -8,7 +8,9 @@ struct ReposView: View {
     @State private var showDeleteAlert = false
     @State private var showNewRepoSheet = false
     @State private var showFileEditor = false
-    @State private var mode: ViewMode = .repos
+    @State private var importRepo: GitHubRepo?
+    @State private var isImporting = false
+    @State private var importStatus = ""
     @State private var newRepoName = ""
     @State private var newRepoDesc = ""
     @State private var isCreating = false
@@ -26,14 +28,17 @@ struct ReposView: View {
             VStack(spacing: 0) {
                 headerBar
                 searchBar
+                importStatusBar
                 if mode == .repos { reposList } else { filesList }
             }
         }
         .sheet(isPresented: $showNewRepoSheet) { newRepoSheet }
-        .sheet(isPresented: $showDeleteAlert) { deleteAlert }
+        .sheet(isPresented: $showDeleteAlert) { deleteDialog }
         .sheet(isPresented: $showFileEditor) { if let f = fileManager.selectedFile { fileEditorSheet(f) } }
         .onAppear { if gitHubService.repositories.isEmpty { Task { await gitHubService.fetchRepositories() } } }
     }
+    
+    @State private var mode: ViewMode = .repos
     
     var headerBar: some View {
         HStack {
@@ -55,6 +60,26 @@ struct ReposView: View {
             Text("\(filteredRepos.count) repos").font(.system(size: 12)).foregroundColor(AppColors.textSecondary)
         }
         .padding(.horizontal).padding(.bottom, 8)
+    }
+    
+    var importStatusBar: some View {
+        Group {
+            if isImporting || !importStatus.isEmpty {
+                HStack {
+                    if isImporting {
+                        ProgressView().progressViewStyle(CircularProgressViewStyle(tint: AppColors.accent)).scaleEffect(0.8)
+                    }
+                    Text(importStatus).font(.system(size: 13)).foregroundColor(importStatus.contains("success") ? Color(hex: "#6BCB77") : AppColors.textSecondary)
+                    Spacer()
+                    if !isImporting {
+                        Button { importStatus = "" } label: { Image(systemName: "xmark.circle.fill").foregroundColor(AppColors.textSecondary) }
+                    }
+                }
+                .padding(12).background(AppColors.surface.opacity(0.8)).clipShape(RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal).padding(.bottom, 8)
+                .glassCard()
+            }
+        }
     }
     
     var reposList: some View {
@@ -84,7 +109,7 @@ struct ReposView: View {
                 Image(systemName: repo.isPrivate ? "lock.fill" : "globe").font(.system(size: 13)).foregroundColor(repo.isPrivate ? Color(hex: "#FFD93D") : AppColors.textSecondary)
                 Text(repo.name).font(.system(size: 16, weight: .bold)).foregroundColor(AppColors.text)
                 Spacer()
-                Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(AppColors.textSecondary)
+                Button { selectedRepo = repo; showDeleteAlert = true } label: { Image(systemName: "ellipsis.circle.fill").font(.system(size: 18)).foregroundColor(AppColors.textSecondary) }
             }
             if let d = repo.description { Text(d).font(.system(size: 12)).foregroundColor(AppColors.textSecondary).lineLimit(2) }
             HStack(spacing: 16) {
@@ -94,14 +119,13 @@ struct ReposView: View {
                 Spacer()
             }
             HStack(spacing: 8) {
-                Button { importRepoToFiles(repo) } label: { HStack(spacing: 4) { Image(systemName: "arrow.down.circle.fill").font(.system(size: 12)); Text("Import") }.font(.system(size: 11, weight: .medium)).foregroundColor(Color(hex: "#6BCB77")) }.buttonStyle(.plain)
+                Button { importRepoFiles(repo) } label: { HStack(spacing: 4) { Image(systemName: "arrow.down.circle.fill").font(.system(size: 12)); Text("Import") }.font(.system(size: 11, weight: .medium)).foregroundColor(Color(hex: "#6BCB77")) }.buttonStyle(.plain)
                 Button { if let u = URL(string: repo.htmlUrl) { UIApplication.shared.open(u) } } label: { HStack(spacing: 4) { Image(systemName: "safari.fill").font(.system(size: 12)); Text("Browser") }.font(.system(size: 11, weight: .medium)).foregroundColor(AppColors.accent) }.buttonStyle(.plain)
-                Button { } label: { HStack(spacing: 4) { Image(systemName: "doc.on.doc.fill").font(.system(size: 12)); Text("Clone") }.font(.system(size: 11, weight: .medium)).foregroundColor(Color(hex: "#C77DFF")) }.buttonStyle(.plain)
-                Spacer()
-                Button { selectedRepo = repo } label: { Image(systemName: "ellipsis.circle.fill").font(.system(size: 16)).foregroundColor(AppColors.textSecondary) }.buttonStyle(.plain)
+                Button { UIPasteboard.general.string = repo.cloneUrl } label: { HStack(spacing: 4) { Image(systemName: "doc.on.doc.fill").font(.system(size: 12)); Text("Clone") }.font(.system(size: 11, weight: .medium)).foregroundColor(Color(hex: "#C77DFF")) }.buttonStyle(.plain)
             }
         }
         .padding(16).background(AppColors.surface).clipShape(RoundedRectangle(cornerRadius: 12))
+        .liquidGlass(cornerRadius: 12)
     }
     
     func fileRow(_ file: GitFile) -> some View {
@@ -120,20 +144,39 @@ struct ReposView: View {
     
     func handleFileTap(_ file: GitFile) { if file.isDirectory { fileManager.loadFiles(at: URL(fileURLWithPath: file.path)) } else { fileManager.readFile(file); showFileEditor = true } }
     
-    func importRepoToFiles(_ repo: GitHubRepo) {
-        guard let user = gitHubService.currentUser else { return }
+    func importRepoFiles(_ repo: GitHubRepo) {
+        guard let user = gitHubService.currentUser else { importStatus = "Error: Not logged in"; return }
+        isImporting = true
+        importStatus = "Fetching \(repo.name)..."
+        
         Task {
             do {
                 let files = try await gitHubService.fetchRepoTree(owner: user.login, repo: repo.name, branch: repo.defaultBranch)
+                await MainActor.run { importStatus = "Saving \(files.count) files..." }
+                
                 let folder = LocalFileManager.appDocumentsURL.appendingPathComponent(repo.name, isDirectory: true)
                 try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                
+                var saved = 0
                 for f in files {
                     let path = folder.appendingPathComponent(f.path)
                     try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try? f.content.write(to: path, atomically: true, encoding: .utf8)
+                    saved += 1
                 }
-                await MainActor.run { fileManager.loadFiles(at: LocalFileManager.appDocumentsURL); mode = .files }
-            } catch { await MainActor.run { gitHubService.error = error.localizedDescription } }
+                
+                await MainActor.run { 
+                    fileManager.loadFiles(at: LocalFileManager.appDocumentsURL)
+                    mode = .files
+                    isImporting = false
+                    importStatus = "\(saved) files imported successfully!"
+                }
+            } catch {
+                await MainActor.run { 
+                    isImporting = false
+                    importStatus = "Error: \(error.localizedDescription)"
+                }
+            }
         }
     }
     
@@ -151,17 +194,27 @@ struct ReposView: View {
         }.preferredColorScheme(.dark)
     }
     
-    var deleteAlert: some View {
-        ZStack { AppColors.background.ignoresSafeArea()
-            VStack(spacing: 20) {
-                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 40)).foregroundColor(Color(hex: "#FF6B6B"))
-                Text("Delete Repository?").font(.system(size: 18, weight: .bold)).foregroundColor(AppColors.text)
-                Text("This action cannot be undone.").font(.system(size: 14)).foregroundColor(AppColors.textSecondary)
-                HStack(spacing: 16) {
-                    Button("Cancel", role: .cancel) { selectedRepo = nil }.font(.system(size: 15, weight: .semibold)).foregroundColor(AppColors.textSecondary).frame(maxWidth: .infinity).frame(height: 44).background(AppColors.surfaceElevated).clipShape(RoundedRectangle(cornerRadius: 10))
-                    Button("Delete", role: .destructive) { deleteRepo() }.font(.system(size: 15, weight: .semibold)).foregroundColor(.white).frame(maxWidth: .infinity).frame(height: 44).background(Color(hex: "#FF6B6B")).clipShape(RoundedRectangle(cornerRadius: 10))
+    var deleteDialog: some View {
+        ZStack { 
+            Color.black.opacity(0.5).ignoresSafeArea()
+            VStack(spacing: 0) {
+                VStack(spacing: 16) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 40)).foregroundColor(Color(hex: "#FF6B6B"))
+                    Text("Delete Repository?").font(.system(size: 18, weight: .bold)).foregroundColor(AppColors.text)
+                    Text("This will delete \"\(selectedRepo?.name ?? "")\" from GitHub.").font(.system(size: 14)).foregroundColor(AppColors.textSecondary).multilineTextAlignment(.center)
                 }
-            }.padding(30)
+                .padding(30)
+                .background(AppColors.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(AppColors.border, lineWidth: 1))
+                .liquidGlass(cornerRadius: 20, intensity: 0.8)
+                
+                HStack(spacing: 16) {
+                    Button("Cancel") { selectedRepo = nil }.font(.system(size: 15, weight: .semibold)).foregroundColor(AppColors.text).frame(maxWidth: .infinity).frame(height: 44).background(AppColors.surfaceElevated).clipShape(RoundedRectangle(cornerRadius: 10))
+                    Button("Delete") { deleteRepo() }.font(.system(size: 15, weight: .semibold)).foregroundColor(.white).frame(maxWidth: .infinity).frame(height: 44).background(Color(hex: "#FF6B6B")).clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+            .padding(30)
         }.preferredColorScheme(.dark)
     }
     
