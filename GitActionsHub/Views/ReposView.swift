@@ -16,6 +16,7 @@ struct ReposView: View {
     @State private var mode: ViewMode = .repos
     
     enum ViewMode { case repos, files }
+    
     enum SortOption: String, CaseIterable { case updated = "Updated", case name = "Name", case stars = "Stars" }
 
     var filteredRepos: [GitHubRepo] {

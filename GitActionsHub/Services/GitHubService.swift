@@ -229,7 +229,9 @@ struct RepoFile: Identifiable {
     var size: Int
 }
 
-struct GitHubError: LocalizedError {
+struct EmptyResponse: Codable {}
+
+enum GitHubError: LocalizedError {
     case notAuthenticated, invalidURL, invalidResponse, unauthorized, serverError(Int)
     var errorDescription: String? {
         switch self {
