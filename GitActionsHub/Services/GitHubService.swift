@@ -67,7 +67,6 @@ class GitHubService: ObservableObject {
         }
     }
     
-    // Fix 6: Delete repository
     func deleteRepository(repo: GitHubRepo) async {
         guard let user = currentUser else { return }
         do {
@@ -185,11 +184,11 @@ enum GitHubError: LocalizedError {
     case notAuthenticated, invalidURL, invalidResponse, unauthorized, serverError(Int)
     var errorDescription: String? {
         switch self {
-        case .notAuthenticated: return "غير مسجل الدخول"
-        case .invalidURL: return "رابط غير صالح"
-        case .invalidResponse: return "استجابة غير صالحة"
-        case .unauthorized: return "التوكن غير صالح أو منتهي الصلاحية"
-        case .serverError(let code): return "خطأ في الخادم: \(code)"
+        case .notAuthenticated: return "Not authenticated"
+        case .invalidURL: return "Invalid URL"
+        case .invalidResponse: return "Invalid response"
+        case .unauthorized: return "Invalid or expired token"
+        case .serverError(let code): return "Server error: \(code)"
         }
     }
 }
