@@ -286,13 +286,13 @@ struct StatusBadge: View {
         switch status {
         case "completed":
             switch conclusion {
-            case "success": return "نجاح"
-            case "failure": return "فشل"
-            case "cancelled": return "ملغى"
-            default: return conclusion ?? "مكتمل"
+            case "success": return "Success"
+            case "failure": return "Failed"
+            case "cancelled": return "Cancelled"
+            default: return conclusion ?? "Completed"
             }
-        case "in_progress": return "جارٍ"
-        case "queued": return "انتظار"
+        case "in_progress": return "Running"
+        case "queued": return "Queued"
         default: return status
         }
     }
@@ -335,7 +335,7 @@ struct SectionHeader: View {
     let title: String
     var subtitle: String? = nil
     var action: (() -> Void)? = nil
-    var actionLabel: String = "عرض الكل"
+    var actionLabel: String = "View All"
     
     var body: some View {
         HStack {
