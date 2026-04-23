@@ -17,7 +17,6 @@ struct LoginView: View {
                 VStack(spacing: 32) {
                     Spacer(minLength: 60)
                     
-                    // Logo & Title
                     VStack(spacing: 20) {
                         ZStack {
                             Circle()
@@ -32,7 +31,6 @@ struct LoginView: View {
                                 .scaleEffect(pulseAnimation ? 1.15 : 0.95)
                                 .animation(.easeInOut(duration: 2.5).repeatForever(autoreverses: true), value: pulseAnimation)
                             
-                            // App Icon
                             ZStack {
                                 RoundedRectangle(cornerRadius: 22)
                                     .fill(
@@ -63,26 +61,23 @@ struct LoginView: View {
                                 .font(.system(size: 32, weight: .black, design: .default))
                                 .foregroundColor(AppColors.text)
                             
-                            Text("إدارة GitHub Actions من جهازك")
+                            Text("Manage GitHub Actions from your device")
                                 .font(.system(size: 16))
                                 .foregroundColor(AppColors.textSecondary)
                                 .multilineTextAlignment(.center)
                         }
                     }
                     
-                    // Login Card
                     VStack(spacing: 20) {
-                        // Feature highlights
                         VStack(spacing: 12) {
-                            FeatureRow(icon: "bolt.circle.fill", color: AppColors.accent, text: "مراقبة Actions مباشرة")
-                            FeatureRow(icon: "exclamationmark.triangle.fill", color: Color(hex: "#FFD93D"), text: "اكتشاف الأخطاء الفوري")
-                            FeatureRow(icon: "folder.fill", color: Color(hex: "#6BCB77"), text: "إدارة ملفات المشروع")
-                            FeatureRow(icon: "arrow.triangle.2.circlepath", color: Color(hex: "#FF6B6B"), text: "Commit & Push مباشر")
+                            FeatureRow(icon: "bolt.circle.fill", color: AppColors.accent, text: "Live Actions monitoring")
+                            FeatureRow(icon: "exclamationmark.triangle.fill", color: Color(hex: "#FFD93D"), text: "Instant error detection")
+                            FeatureRow(icon: "folder.fill", color: Color(hex: "#6BCB77"), text: "Project file management")
+                            FeatureRow(icon: "arrow.triangle.2.circlepath", color: Color(hex: "#FF6B6B"), text: "Direct Commit & Push")
                         }
                         .padding(20)
                         .glassCard()
                         
-                        // Token input
                         VStack(spacing: 12) {
                             HStack {
                                 Image(systemName: "key.fill")
@@ -112,13 +107,12 @@ struct LoginView: View {
                                     .strokeBorder(token.isEmpty ? AppColors.border : AppColors.accent.opacity(0.6), lineWidth: 1)
                             )
                             
-                            Text("يلزم صلاحيات: repo, workflow, read:user")
+                            Text("Requires: repo, workflow, read:user")
                                 .font(.system(size: 11))
                                 .foregroundColor(AppColors.textSecondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         
-                        // Login Button
                         Button {
                             loginWithToken()
                         } label: {
@@ -131,7 +125,7 @@ struct LoginView: View {
                                     Image(systemName: "arrow.right.circle.fill")
                                         .font(.system(size: 18))
                                 }
-                                Text(gitHubService.isLoading ? "جارٍ تسجيل الدخول..." : "تسجيل الدخول")
+                                Text(gitHubService.isLoading ? "Signing in..." : "Sign In")
                                     .font(.system(size: 16, weight: .bold))
                             }
                             .foregroundColor(.white)
@@ -155,11 +149,10 @@ struct LoginView: View {
                         }
                         .disabled(token.isEmpty || gitHubService.isLoading)
                         
-                        // Create token link hint
                         HStack(spacing: 4) {
                             Image(systemName: "info.circle")
                                 .font(.system(size: 12))
-                            Text("أنشئ التوكن من: Settings → Developer settings → Personal access tokens")
+                            Text("Create token: Settings > Developer settings > Personal access tokens")
                                 .font(.system(size: 11))
                                 .multilineTextAlignment(.center)
                         }
@@ -167,7 +160,6 @@ struct LoginView: View {
                     }
                     .padding(.horizontal, 24)
                     
-                    // Error message
                     if let error = gitHubService.error {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle.fill")
