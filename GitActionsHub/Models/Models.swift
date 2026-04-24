@@ -1,6 +1,12 @@
 import Foundation
 import SwiftUI
 
+// MARK: - App Tab
+
+enum AppTab: String, CaseIterable {
+    case actions, repos, files
+}
+
 // MARK: - GitHub Models
 
 struct GitHubUser: Codable, Identifiable {
