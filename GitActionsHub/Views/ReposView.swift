@@ -60,7 +60,7 @@ struct ReposView: View {
         .sheet(isPresented: $showDeleteAlert)  { deleteSheet }
         .sheet(isPresented: $showFileEditor)   {
             if let f = fileManager.selectedFile {
-                CodeEditorSheet(file: f, content: fileManager.fileContent) { fileManager.writeFile(f, content: $0) }
+                FileEditorView(file: f, content: fileManager.fileContent) { fileManager.writeFile(f, content: $0) }
             }
         }
         .onAppear {
@@ -513,7 +513,7 @@ struct ReposView: View {
             } catch let error as GitHubError {
                 await MainActor.run {
                     isImporting = false
-                    importStatus = "❌ \(error.localizedDescription)"
+                    importStatus = "❌ \(error.localizedDescription ?? "Unknown error")"
                 }
             } catch {
                 await MainActor.run {
